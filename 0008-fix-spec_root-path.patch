@@ -1,0 +1,29 @@
+From 004babadd01c1fc61a609ebfd52bda8bf08a5cc3 Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Thu, 25 Aug 2011 14:41:29 -0700
+Subject: [PATCH 8/9] fix spec_root path
+
+We moved the specs from /var/target/fabric to /var/lib/target/fabric, so
+this needs to be updated so saveconfig will work.
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ rtsadmin/tcm_fabric.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/rtsadmin/tcm_fabric.py b/rtsadmin/tcm_fabric.py
+index 8d359d7..67ef4b0 100644
+--- a/rtsadmin/tcm_fabric.py
++++ b/rtsadmin/tcm_fabric.py
+@@ -6,7 +6,7 @@ import datetime, time
+ import optparse
+ 
+ target_root = "/sys/kernel/config/target/"
+-spec_root = "/var/target/fabric/"
++spec_root = "/var/lib/target/fabric/"
+ 
+ def fabric_configfs_dump(fabric_name, fabric_root, module_name):
+ 
+-- 
+1.7.1
+

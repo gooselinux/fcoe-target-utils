@@ -1,0 +1,136 @@
+From 80e3a1bbbe67e3521b27fbc3bac1071af01f98e0 Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Sat, 30 Jul 2011 18:31:45 -0700
+Subject: [PATCH 6/7] Hack. dump scripts aren't in PATH anymore, so call them explicitly.
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ rtsadmin/lio_dump.py   |    3 ++-
+ rtsadmin/tcm_dump.py   |   22 +++++++++++++---------
+ rtsadmin/tcm_fabric.py |    4 ++--
+ 3 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/rtsadmin/lio_dump.py b/rtsadmin/lio_dump.py
+index eb65675..a3c0c9d 100644
+--- a/rtsadmin/lio_dump.py
++++ b/rtsadmin/lio_dump.py
+@@ -222,7 +222,8 @@ def lio_backup_to_file(option, opt_str, value, parser):
+ 			print "Unable to open backup_dir"
+ 			sys.exit(1)
+ 
+-	op = "lio_dump --stdout"
++	prefix = "python /usr/lib/python2.6/site-packages/rtsadmin/"
++	op = prefix + "lio_dump.py --stdout"
+ 	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
+ 	if not p:
+ 		print "Unable to dump LIO-Target/ConfigFS running state"
+diff --git a/rtsadmin/tcm_dump.py b/rtsadmin/tcm_dump.py
+index 3963b51..1605cc1 100644
+--- a/rtsadmin/tcm_dump.py
++++ b/rtsadmin/tcm_dump.py
+@@ -22,6 +22,10 @@ tcm_root = "/sys/kernel/config/target/core"
+ def tcm_dump_hba_devices():
+ 	pass
+ 
++path_prefix = "python /usr/lib/python2.6/site-packages/rtsadmin/"
++tcm_node_path = path_prefix + "tcm_node.py"
++tcm_dump_path = path_prefix + "tcm_dump.py"
++
+ def tcm_dump_configfs(option, opt_str, value, parser):
+ 
+ 	if not os.path.isdir(tcm_root):
+@@ -70,35 +74,35 @@ def tcm_dump_configfs(option, opt_str, value, parser):
+ 				params = tcm_pscsi.pscsi_get_params(dev)
+ 				if not params:
+ 					continue
+-				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++				print tcm_node_path + " --establishdev " + f + "/" + g + " " + str(params)
+ 			result = re.search('iblock_', f)
+ 			if result:
+ 				dev = dev_root + g
+ 				params = tcm_iblock.iblock_get_params(dev)
+ 				if not params:
+ 					continue
+-				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++				print tcm_node_path + " --establishdev " + f + "/" + g + " " + str(params)
+ 			result = re.search('rd_dr_', f)
+ 			if result:
+ 				dev = dev_root + g
+ 				params = tcm_ramdisk.rd_get_params(dev)	
+ 				if not params:
+ 					continue
+-				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++				print tcm_node_path + " --establishdev " + f + "/" + g + " " + str(params)
+ 			result = re.search('rd_mcp_', f)
+ 			if result:
+ 				dev = dev_root + g
+ 				params = tcm_ramdisk.rd_get_params(dev)
+ 				if not params:
+ 					continue
+-				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++				print tcm_node_path + " --establishdev " + f + "/" + g + " " + str(params)
+ 			result = re.search('fileio_', f)
+ 			if result:
+ 				dev = dev_root + g
+ 				params = tcm_fileio.fd_get_params(dev)
+ 				if not params:
+ 					continue
+-				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++				print tcm_node_path + " --establishdev " + f + "/" + g + " " + str(params)
+ 
+ 			# Dump T10 VP Unit Serial for all non Target_Core_Mod/pSCSI objects
+ 			result = re.search('pscsi_', f)
+@@ -110,7 +114,7 @@ def tcm_dump_configfs(option, opt_str, value, parser):
+ 				off += 8 # Skip over "Number: " 
+ 				unit_serial = value[off:]
+ 				# Note that this will handle read, parse and set any PR APTPL metadata
+-				print "tcm_node --setunitserialwithmd " + f + "/" + g + " " + unit_serial.rstrip()
++				print tcm_node_path + " --setunitserialwithmd " + f + "/" + g + " " + unit_serial.rstrip()
+ 				os.close(p)
+ 
+ 			# Dump device object alias
+@@ -148,7 +152,7 @@ def tcm_dump_configfs(option, opt_str, value, parser):
+ 					os.close(p)
+ 					if not value:
+ 						continue
+-					print "tcm_node --addaluatpgwithmd " + f + "/" + g + " " + tg_pt_gp + " " + value.rstrip()
++					print tcm_node_path + " --addaluatpgwithmd " + f + "/" + g + " " + tg_pt_gp + " " + value.rstrip()
+ 					# Dump the ALUA types
+ 					tg_pt_gp_type_file = dev_root + g + "/alua/" + tg_pt_gp + "/alua_access_type"
+ 					p = os.open(tg_pt_gp_type_file, 0)
+@@ -246,7 +250,7 @@ def tcm_dump_configfs(option, opt_str, value, parser):
+ 				print "echo " + attr_val + " > " + attrib_file
+ 
+ 			if snap_enabled == 1:
+-				print "tcm_node --lvsnapstart " + f + "/" + g
++				print tcm_node_path + " --lvsnapstart " + f + "/" + g
+ 
+ def tcm_backup_to_file(option, opt_str, value, parser):
+ 	datetime = str(value)
+@@ -263,7 +267,7 @@ def tcm_backup_to_file(option, opt_str, value, parser):
+ 			print "Unable to open backup_dir"
+ 			sys.exit(1)
+ 
+-	op = "tcm_dump --stdout"
++	op = tcm_dump_path + " --stdout"
+ 	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
+ 	if not p:
+ 		print "Unable to dump Target_Core_Mod/ConfigFS running state"
+diff --git a/rtsadmin/tcm_fabric.py b/rtsadmin/tcm_fabric.py
+index 88c7db4..821709b 100644
+--- a/rtsadmin/tcm_fabric.py
++++ b/rtsadmin/tcm_fabric.py
+@@ -255,8 +255,8 @@ def fabric_backup_to_file(date_time, fabric_name, fabric_root, module_name):
+ 		if ret:
+ 			print "Unable to open backup_dir"
+ 			sys.exit(1)
+-
+-	op = "tcm_fabric --stdout --fabric-name=" + fabric_name + " --fabric-root=" + fabric_root + " --module-name=" + module_name
++	prefix = "python /usr/lib/python2.6/site-packages/rtsadmin/"
++	op = prefix + "tcm_fabric.py --stdout --fabric-name=" + fabric_name + " --fabric-root=" + fabric_root + " --module-name=" + module_name
+ #	print "Using op: " + op
+ 	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
+ 	if not p:
+-- 
+1.7.1
+

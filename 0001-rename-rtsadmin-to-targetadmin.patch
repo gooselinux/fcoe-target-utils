@@ -1,0 +1,188 @@
+From 8ffbb60f6a860df5daeb4ae2212d7e28aafca21a Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Thu, 28 Jul 2011 10:58:18 -0700
+Subject: [PATCH 1/7] rename rtsadmin to targetadmin
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ scripts/rtsadmin    |   80 ---------------------------------------------------
+ scripts/targetadmin |   80 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 80 insertions(+), 80 deletions(-)
+ delete mode 100755 scripts/rtsadmin
+ create mode 100755 scripts/targetadmin
+
+diff --git a/scripts/rtsadmin b/scripts/rtsadmin
+deleted file mode 100755
+index b010823..0000000
+--- a/scripts/rtsadmin
++++ /dev/null
+@@ -1,80 +0,0 @@
+-#!/usr/bin/python
+-'''
+-Starts the rtsadmin CLI shell.
+-
+-This file is part of RTSAdmin Community Edition.
+-Copyright (c) 2011 by RisingTide Systems LLC
+-
+-This program is free software: you can redistribute it and/or modify
+-it under the terms of the GNU Affero General Public License as
+-published by the Free Software Foundation, version 3 (AGPLv3).
+-
+-This program is distributed in the hope that it will be useful,
+-but WITHOUT ANY WARRANTY; without even the implied warranty of
+-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-GNU Affero General Public License for more details.
+-
+-You should have received a copy of the GNU Affero General Public License
+-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-Copyright (c) 2011 by RisingTide Systems LLC.
+-All rights reserved.
+-'''
+-
+-from os import getuid
+-from rtsadmin import UIRoot
+-from rtslib import RTSLibError
+-from configshell import ConfigShell
+-
+-class RTSAdmin(ConfigShell):
+-    default_prefs = {'color_path': 'magenta',
+-                     'color_command': 'cyan',
+-                     'color_parameter': 'magenta',
+-                     'color_keyword': 'cyan',
+-                     'completions_in_columns': True,
+-                     'logfile': None,
+-                     'loglevel_console': 'info',
+-                     'loglevel_file': 'debug9',
+-                     'color_mode': True,
+-                     'prompt_length': 30,
+-                     'tree_max_depth': 0,
+-                     'tree_status_mode': True,
+-                     'tree_round_nodes': True,
+-                     'tree_show_root': True,
+-                     'auto_enable_tpgt': True,
+-                     'auto_add_mapped_luns': True,
+-                     'auto_cd_after_create': True,
+-                     'legacy_hba_view': False
+-                    }
+-
+-def main():
+-    '''
+-    Start the rtsadmin shell.
+-    '''
+-    if getuid() == 0:
+-        is_root = True
+-    else:
+-        is_root = False
+-
+-    shell = RTSAdmin('~/.rtsadmin')
+-    shell.con.epy_write('''
+-                        Welcome to the B{rtsadmin Community Edition} CLI::
+-                         Copyright (c) 2011 by RisingTide Systems LLC.
+-
+-                        Visit us at U{http://www.risingtidesystems.com}.
+-                       ''')
+-    shell.con.display('')
+-    if not is_root:
+-        shell.con.display('You are not root, disabling privileged commands.')
+-        shell.con.display('')
+-
+-    root_node = UIRoot(shell, as_root=is_root)
+-
+-    try:
+-        root_node.refresh()
+-    except RTSLibError, error:
+-        shell.con.display(shell.con.render_text(str(error), 'red'))
+-    else:
+-        shell.run_interactive()
+-
+-if __name__ == "__main__":
+-    main()
+diff --git a/scripts/targetadmin b/scripts/targetadmin
+new file mode 100755
+index 0000000..b010823
+--- /dev/null
++++ b/scripts/targetadmin
+@@ -0,0 +1,80 @@
++#!/usr/bin/python
++'''
++Starts the rtsadmin CLI shell.
++
++This file is part of RTSAdmin Community Edition.
++Copyright (c) 2011 by RisingTide Systems LLC
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU Affero General Public License as
++published by the Free Software Foundation, version 3 (AGPLv3).
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU Affero General Public License for more details.
++
++You should have received a copy of the GNU Affero General Public License
++along with this program.  If not, see <http://www.gnu.org/licenses/>.
++Copyright (c) 2011 by RisingTide Systems LLC.
++All rights reserved.
++'''
++
++from os import getuid
++from rtsadmin import UIRoot
++from rtslib import RTSLibError
++from configshell import ConfigShell
++
++class RTSAdmin(ConfigShell):
++    default_prefs = {'color_path': 'magenta',
++                     'color_command': 'cyan',
++                     'color_parameter': 'magenta',
++                     'color_keyword': 'cyan',
++                     'completions_in_columns': True,
++                     'logfile': None,
++                     'loglevel_console': 'info',
++                     'loglevel_file': 'debug9',
++                     'color_mode': True,
++                     'prompt_length': 30,
++                     'tree_max_depth': 0,
++                     'tree_status_mode': True,
++                     'tree_round_nodes': True,
++                     'tree_show_root': True,
++                     'auto_enable_tpgt': True,
++                     'auto_add_mapped_luns': True,
++                     'auto_cd_after_create': True,
++                     'legacy_hba_view': False
++                    }
++
++def main():
++    '''
++    Start the rtsadmin shell.
++    '''
++    if getuid() == 0:
++        is_root = True
++    else:
++        is_root = False
++
++    shell = RTSAdmin('~/.rtsadmin')
++    shell.con.epy_write('''
++                        Welcome to the B{rtsadmin Community Edition} CLI::
++                         Copyright (c) 2011 by RisingTide Systems LLC.
++
++                        Visit us at U{http://www.risingtidesystems.com}.
++                       ''')
++    shell.con.display('')
++    if not is_root:
++        shell.con.display('You are not root, disabling privileged commands.')
++        shell.con.display('')
++
++    root_node = UIRoot(shell, as_root=is_root)
++
++    try:
++        root_node.refresh()
++    except RTSLibError, error:
++        shell.con.display(shell.con.render_text(str(error), 'red'))
++    else:
++        shell.run_interactive()
++
++if __name__ == "__main__":
++    main()
+-- 
+1.7.1
+

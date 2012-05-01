@@ -1,0 +1,3992 @@
+From 9f983c45e38a1f0cb9a6459828472510362fa6f8 Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Thu, 18 Aug 2011 11:19:35 -0700
+Subject: [PATCH 4/7] bundle lio-utils
+
+lio-utils is used just for saving state. It should be going away
+shortly, so just bundle it for now.
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ rtsadmin/lio_dump.py    |  265 ++++++++++
+ rtsadmin/lio_node.py    | 1349 +++++++++++++++++++++++++++++++++++++++++++++++
+ rtsadmin/tcm_dump.py    |  366 +++++++++++++
+ rtsadmin/tcm_fabric.py  |  532 +++++++++++++++++++
+ rtsadmin/tcm_fileio.py  |   83 +++
+ rtsadmin/tcm_iblock.py  |   86 +++
+ rtsadmin/tcm_loop.py    |  242 +++++++++
+ rtsadmin/tcm_node.py    |  737 ++++++++++++++++++++++++++
+ rtsadmin/tcm_pscsi.py   |  184 +++++++
+ rtsadmin/tcm_ramdisk.py |   53 ++
+ 10 files changed, 3897 insertions(+), 0 deletions(-)
+ create mode 100644 rtsadmin/lio_dump.py
+ create mode 100644 rtsadmin/lio_node.py
+ create mode 100644 rtsadmin/tcm_dump.py
+ create mode 100644 rtsadmin/tcm_fabric.py
+ create mode 100644 rtsadmin/tcm_fileio.py
+ create mode 100644 rtsadmin/tcm_iblock.py
+ create mode 100644 rtsadmin/tcm_loop.py
+ create mode 100644 rtsadmin/tcm_node.py
+ create mode 100644 rtsadmin/tcm_pscsi.py
+ create mode 100644 rtsadmin/tcm_ramdisk.py
+
+diff --git a/rtsadmin/lio_dump.py b/rtsadmin/lio_dump.py
+new file mode 100644
+index 0000000..1ee521c
+--- /dev/null
++++ b/rtsadmin/lio_dump.py
+@@ -0,0 +1,265 @@
++import os, sys
++import subprocess as sub
++import string
++import re
++import datetime, time
++from optparse import OptionParser
++
++lio_root = "/sys/kernel/config/target/iscsi"
++
++def lio_target_configfs_dump(option, opt_str, value, parser):
++
++	if not os.path.isdir(lio_root):
++		print "Unable to access lio_root: " + lio_root
++		sys.exit(1)
++
++	iqn_root = os.listdir(lio_root)
++
++	# This will load up iscsi_target_mod.ko
++	print "mkdir " + lio_root
++
++	print "#### iSCSI Discovery authentication information"
++	auth_dir = lio_root + "/discovery_auth"
++	if os.path.isdir(auth_dir) == True:
++		for auth in os.listdir(auth_dir):
++			if auth == "authenticate_target":
++				continue
++
++			auth_file = auth_dir + "/" + auth
++			p = os.open(auth_file, 0)
++			value = os.read(p, 256)
++			ret = value.isspace()
++			if ret:
++				os.close(p)
++				continue
++			print "echo -n " + value.rstrip() + " > " + auth_file
++			os.close(p)
++
++	iqn_root = os.listdir(lio_root)
++
++	# Loop through LIO-Target IQN list
++	for iqn in iqn_root:
++		if iqn == "lio_version":
++			continue
++		if iqn == "discovery_auth":
++			continue
++
++		# Loop through LIO-Target IQN+TPGT list
++		tpg_root = os.listdir(lio_root + "/" + iqn);
++		for tpgt_tmp in tpg_root:
++			if tpgt_tmp == "fabric_statistics":
++				continue
++
++			tpgt_tmp2 = tpgt_tmp.split('_')
++			tpgt = tpgt_tmp2[1]
++
++			print "#### Network portals for iSCSI Target Portal Group"
++			np_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np")
++			for np in np_root:
++				print "mkdir -p " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np/" + np
++
++			print "#### iSCSI Target Ports"
++			lun_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun")
++			for lun_tmp in lun_root:
++				lun_tmp2 = lun_tmp.split('_')
++				lun = lun_tmp2[1]
++				
++				lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++				print "mkdir -p " + lun_dir
++
++				port_root = os.listdir(lun_dir)
++				for port in port_root:
++					if port == "alua_tg_pt_gp":
++						continue
++					if port == "alua_tg_pt_offline":
++						continue
++					if port == "alua_tg_pt_status":
++						continue
++					if port == "alua_tg_pt_write_md":
++						continue
++					
++					if not os.path.islink(lun_dir + "/" + port):
++						continue
++
++					port_link = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun + "/" + port
++					sourcelink = os.readlink(port_link)
++					sourcelink2 = os.path.join(os.path.dirname(port_link), sourcelink)
++					print "ln -s " + sourcelink2 + " " + port_link
++
++				# Dump ALUA Target Port Group
++				tg_pt_gp_file = lun_dir + "/alua_tg_pt_gp"
++				p = os.open(tg_pt_gp_file, 0)
++				try:
++					value = os.read(p, 512)
++				except:
++					os.close(p)
++					continue
++				os.close(p)
++				if value:
++					tg_pt_gp_tmp = value.split('\n')
++					tg_pt_gp_out = tg_pt_gp_tmp[0]
++					off = tg_pt_gp_out.index('Alias: ')
++					off += 7 # Skip over "Alias: "
++					tg_pt_gp_name = tg_pt_gp_out[off:]
++					# Only need to dump if LIO-Target Port is NOT partof
++					# the 'default_tg_pt_gp'
++					if not re.search(tg_pt_gp_name, 'default_tg_pt_gp'):
++						print "#### ALUA Target Port Group"
++						print "echo " + tg_pt_gp_name + " > " + tg_pt_gp_file
++
++					print "lio_node --aluasecmd " + iqn + " " + tpgt + " " + lun
++
++			# Dump values of iscsi/iqn/tpgt/attrib/
++			print "#### Attributes for iSCSI Target Portal Group"
++			attrib_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/"
++			attrib_root = os.listdir(attrib_dir)
++			for attrib in attrib_root:
++				attrib_file = attrib_dir + attrib 
++				p = os.open(attrib_file, 0)
++				value = os.read(p, 16)
++				print "echo " + value.rstrip() + " > " + attrib_file
++				os.close(p)
++	
++			# Dump values for iscsi/iqn/tpgt/param
++			print "#### Parameters for iSCSI Target Portal Group"
++			param_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/param/"
++			param_root = os.listdir(param_dir)
++			for param in param_root:
++				param_file = param_dir + param
++				p = os.open(param_file, 0)
++				value = os.read(p, 256)
++				print "echo \"" + value.rstrip() + "\" > " + param_file
++				os.close(p)
++
++			# Dump iSCSI Initiator Node ACLs from iscsi/iqn/tpgt/acls
++			print "#### iSCSI Initiator ACLs for iSCSI Target Portal Group"
++			nacl_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/"
++			nacl_root = os.listdir(nacl_dir)
++			for nacl in nacl_root:
++				print "mkdir -p " + nacl_dir + nacl
++				tcq_depth_file = nacl_dir + nacl + "/cmdsn_depth"
++				p = os.open(tcq_depth_file, 0)
++				value = os.read(p, 8)
++				print "echo " + value.rstrip() + " > " + tcq_depth_file
++				os.close(p)
++
++				# Dump iSCSI Initiator ACL authentication info from iscsi/iqn/tpgt/acls/$INITIATOR/auth
++				print "#### iSCSI Initiator ACL authentication information"
++				auth_dir = nacl_dir + nacl + "/auth"
++				for auth in os.listdir(auth_dir):
++					if auth == "authenticate_target":
++						continue
++					auth_file = auth_dir + "/" + auth
++					p = os.open(auth_file, 0)
++					value = os.read(p, 256)
++					ret = value.isspace()
++					if ret:
++						os.close(p)
++						continue
++					print "echo -n " + value.rstrip() + " > " + auth_file
++					os.close(p)
++
++				# Dump iSCSI Initiator ACL TPG attributes from iscsi/iqn/tpgt/acls/$INITIATOR/attrib
++				print "#### iSCSI Initiator ACL TPG attributes"
++				nacl_attrib_dir = nacl_dir + nacl + "/attrib"
++				for nacl_attrib in os.listdir(nacl_attrib_dir):
++					nacl_attrib_file = nacl_attrib_dir + "/" + nacl_attrib
++					p = os.open(nacl_attrib_file, 0)
++					value = os.read(p, 8)
++					print "echo " + value.rstrip() + " > " + nacl_attrib_file
++					os.close(p)
++
++				# Dump iSCSI Initiator LUN ACLs from iscsi/iqn/tpgt/acls/$INITIATOR/lun
++				print "#### iSCSI Initiator LUN ACLs for iSCSI Target Portal Group"
++				lun_acl_dir = nacl_dir + nacl
++				for lun_acl in os.listdir(lun_acl_dir):
++					ret = re.search('lun_', lun_acl)
++					if not ret:
++						continue
++					lun_link_dir = nacl_dir + nacl + "/" + lun_acl
++					print "mkdir -p " + lun_link_dir
++
++					for lun_acl_link in os.listdir(lun_link_dir):
++						if lun_acl_link == "write_protect":
++							p = os.open(lun_link_dir + "/write_protect", 0)
++							value = os.read(p, 4)
++							print "echo " + value.rstrip() + " > " + lun_link_dir + "/write_protect"
++							os.close(p)
++							continue
++
++						if not os.path.islink(lun_link_dir + "/" + lun_acl_link):
++							continue
++
++						sourcelink = os.readlink(lun_link_dir + "/" + lun_acl_link)
++						sourcelink2 = os.path.join(os.path.dirname(lun_link_dir + "/" + lun_acl_link), sourcelink)
++						print "ln -s " + sourcelink2 + " " + lun_link_dir + "/" + lun_acl_link 
++
++			# Dump value of iscsi/iqn/tpgt/enable
++			print "#### Trigger to enable iSCSI Target Portal Group"
++			enable_file = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/enable"
++			p = os.open(enable_file, 0)
++			value = os.read(p, 1)
++			print "echo " + value.rstrip() + " > " + enable_file
++			os.close(p)
++
++#		lio_target_del_iqn(None, None, iqn, None)
++
++	return
++
++def lio_backup_to_file(option, opt_str, value, parser):
++	now = str(value)
++
++	if not os.path.isdir(lio_root):
++		print "Unable to access lio_root: " + lio_root
++		sys.exit(1) 
++
++	backup_dir = "/etc/target/backup"
++	if not os.path.isdir(backup_dir):
++		op = "mkdir " + backup_dir
++		ret = os.system(op)
++		if ret:
++			print "Unable to open backup_dir"
++			sys.exit(1)
++
++	op = "lio_dump --stdout"
++	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
++	if not p:
++		print "Unable to dump LIO-Target/ConfigFS running state"
++		sys.exit(1)
++
++	print "Making backup of LIO-Target/ConfigFS with timestamp: " + now
++	backup_file = backup_dir + "/lio_backup-" + now + ".sh"
++	if os.path.isfile(backup_file): 
++		print "LIO-Target backup_file: " + backup_file + "already exists, exiting"
++		p.close()
++		sys.exit(1)
++
++	back = open(backup_file, 'w')
++
++	line = p.readline()
++	while line:
++		print >>back, line.rstrip()
++		line = p.readline()
++
++	p.close()
++	back.close()
++	return backup_file
++
++def main():
++
++	parser = OptionParser()
++	parser.add_option("--s","--stdout", action="callback", callback=lio_target_configfs_dump, nargs=0,
++		help="Dump running LIO-Target/ConfigFS syntax to STDOUT")
++	parser.add_option("--t", "--tofile", action="callback", callback=lio_backup_to_file, nargs=1,
++		type="string", dest="DATE_TIME", help="Backup running LIO-Target/ConfigFS syntax to /etc/target/backup/lio_backup-<DATE_TIME>.sh")
++
++	(options, args) = parser.parse_args()
++	if len(sys.argv) == 1:
++		parser.print_help()
++		sys.exit(0)
++	elif not re.search('--', sys.argv[1]):
++		print "Unknown CLI option: " + sys.argv[1]
++		sys.exit(1)
++
++if __name__ == "__main__":
++        main()
+diff --git a/rtsadmin/lio_node.py b/rtsadmin/lio_node.py
+new file mode 100644
+index 0000000..e98ace0
+--- /dev/null
++++ b/rtsadmin/lio_node.py
+@@ -0,0 +1,1349 @@
++import os, sys
++import subprocess as sub
++import string
++import re
++from optparse import OptionParser
++
++tcm_root = "/sys/kernel/config/target/core"
++lio_root = "/sys/kernel/config/target/iscsi"
++alua_secondary_md_dir = "/var/target/alua/iSCSI/"
++
++def lio_err(msg):
++	print msg
++	sys.exit(1)
++
++def lio_alua_check_secondary_md(iqn, tpgt):
++	alua_sec_md_path = alua_secondary_md_dir + iqn + "+" + tpgt + "/"
++	if os.path.isdir(alua_sec_md_path) == False:
++		mkdir_op = "mkdir -p " + alua_sec_md_path	
++		ret = os.system(mkdir_op)
++		if ret:
++			lio_err("Unable to create secondary ALUA MD directory: " + alua_sec_md_path)
++
++	return
++
++def lio_alua_delete_secondary_md(iqn, tpgt):
++	alua_sec_md_path = alua_secondary_md_dir + iqn + "+" + tpgt + "/" 
++	if os.path.isdir(alua_sec_md_path) == False:
++		return
++
++	rm_op = "rm -rf " + alua_sec_md_path
++	ret = os.system(rm_op)
++	if ret:
++		lio_err("Unable to remove secondary ALUA MD directory: " + alua_sec_md_path)
++
++	return
++
++def lio_alua_delete_secondary_md_port(iqn, tpgt, lun):
++
++	alua_sec_md_file = alua_secondary_md_dir + iqn + "+" + tpgt + "/lun_" + lun
++	if os.path.isfile(alua_sec_md_file) == False:
++		return
++
++	rm_op = "rm -rf "+ alua_sec_md_file
++	ret = os.system(rm_op)
++	if ret:
++		lio_err("Unable to delete ALUA secondary metadata file: " + alua_sec_md_file)
++
++	return
++
++def lio_alua_set_secondary_write_md(iqn, tpgt, lun):
++	alua_write_md_file = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun + "/alua_tg_pt_write_md"
++	if os.path.isfile(alua_write_md_file) == False:
++		return
++
++	p = open(alua_write_md_file, 'w')
++	if not p:
++		lio_err("Unable to open: " + alua_write_md_file)
++
++	ret = p.write("1")
++	if ret:
++		lio_err("Unable to enable writeable ALUA secondary metadata for " + alua_write_md_file)
++
++	p.close()
++	return
++
++def lio_alua_process_secondary_md(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	alua_sec_md_file = alua_secondary_md_dir + iqn + "+" + tpgt + "/lun_" + lun
++	if os.path.isfile(alua_sec_md_file) == False:
++		# Use --aluasecmd as a chance to make sure the directory for this
++		# LIO-Target endpoint (iqn+tpgt) exists..
++		lio_alua_check_secondary_md(iqn, tpgt)
++		lio_alua_set_secondary_write_md(iqn, tpgt, lun)
++		lio_err("Unable to locate ALUA secondary metadata file: " + alua_sec_md_file)
++		return
++
++#	print "Using alua_sec_md_file: " + alua_sec_md_file
++	alua_sec_cfs_path = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++#	print "Using alua_sec_cfs_path: " + alua_sec_cfs_path
++
++	p = open(alua_sec_md_file, 'rU')
++	if not p:
++		print "Unable to process ALUA secondary metadata for: " + alua_sec_md_file
++
++	line = p.readline()
++	while line:
++		buf = line.rstrip()
++
++		if re.search('alua_tg_pt_offline=', buf):
++			alua_tg_pt_offline = buf[19:]
++#			print "Extracted alua_tg_pt_offline: " + alua_tg_pt_offline
++			cfs = open(alua_sec_cfs_path + "/alua_tg_pt_offline", 'w')
++			if not cfs:
++				p.close()
++				lio_err("Unable to open " + alua_sec_cfs_path + "/alua_tg_pt_offline")
++
++			ret = cfs.write(alua_tg_pt_offline)
++			cfs.close()
++			if ret:
++				p.close()
++				lio_err("Unable to write " + alua_sec_cfs_path + "/alua_tg_pt_offline")
++
++		elif re.search('alua_tg_pt_status=', buf):
++			alua_tg_pt_status = buf[18:]
++#			print "Extracted alua_tg_pt_status: " + alua_tg_pt_status
++			cfs = open(alua_sec_cfs_path + "/alua_tg_pt_status", 'w')
++			if not cfs:
++				p.close()
++				lio_err("Unable to open " + alua_sec_cfs_path + "/alua_tg_pt_status")
++			
++			ret = cfs.write(alua_tg_pt_status)
++			cfs.close()
++			if ret:
++				p.close()
++				lio_err("Unable to write " + alua_sec_cfs_path + "/alua_tg_pt_status")
++
++		line = p.readline()
++
++	p.close()
++	# Now enable the alua_tg_pt_write_md bit to allow for new updates
++	# to ALUA secondary metadata in struct file for this port
++	lio_alua_set_secondary_write_md(iqn, tpgt, lun)
++	return
++
++def __lio_target_del_iqn(option, opt_str, value, parser, delete_tpg_md):
++	iqn = str(value);
++	iqn = iqn.lower();
++
++# Loop through LIO-Target IQN+TPGT list
++	tpg_root = os.listdir(lio_root + "/" + iqn); 
++	for tpgt_tmp in tpg_root:
++		if tpgt_tmp == "fabric_statistics":
++			continue
++
++		tpgt_tmp2 = tpgt_tmp.split('_')
++		tpgt = tpgt_tmp2[1]
++
++		tpg_val = [iqn,tpgt]
++		if delete_tpg_md == 1:
++			lio_target_del_tpg(None, None, tpg_val, None)   
++		else:
++			__lio_target_del_tpg(None, None, tpg_val, None, 0)
++
++	rmdir_op = "rmdir " + lio_root + "/" + iqn
++#	print "rmdir_op: " + rmdir_op
++	ret = os.system(rmdir_op)
++	if not ret:
++		print "Successfully released iSCSI Target Endpoint IQN: " + iqn
++	else:
++		lio_err("Unable to release iSCSI Target Endpoint IQN: " + iqn)
++
++	return
++
++def lio_target_del_iqn(option, opt_str, value, parser):
++	iqn = str(value);
++	iqn = iqn.lower();
++
++	iqn_dir = lio_root + "/" + iqn
++	if os.path.isdir(iqn_dir) == False:
++		lio_err("Unable to locate iSCSI Target IQN: " + iqn_dir)
++
++	# Passing 1 for delete_tpg_md here means lio_target_del_tpg()
++	# with lio_alua_delete_secondary_md() will get called to delete
++	# all of the secondary ALUA directories for the LIO-Target endpoint
++	# when an explict --deliqn is called.
++	__lio_target_del_iqn(option, opt_str, value, parser, 1)
++
++	return
++
++def __lio_target_del_tpg(option, opt_str, value, parser, delete_tpg_md):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	# This will set TPG Status to INACTIVE force all of the iSCSI sessions for this
++	# tiqn+tpgt tuple to be released.
++	disable_op = "echo 0 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/enable"
++	ret = os.system(disable_op)
++	if ret:
++		print "Unable to disable TPG: " + iqn + " TPGT: " + tpgt
++
++	np_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np")
++	for np in np_root:
++		np_val = [iqn,tpgt,np]
++
++		lio_target_del_np(None, None, np_val, None)
++
++	nacl_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls")
++	for nacl in nacl_root:
++		nacl_val = [iqn,tpgt,nacl]
++
++		lio_target_del_nodeacl(None, None, nacl_val, None)
++
++	lun_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun")
++	for lun_tmp in lun_root:
++		lun_tmp2 = lun_tmp.split('_')
++		lun = lun_tmp2[1]
++
++		lun_val = [iqn,tpgt,lun]
++		if delete_tpg_md == 1:
++			lio_target_del_port(None, None, lun_val, None)
++		else:
++			__lio_target_del_port(None, None, lun_val, None)
++
++
++	rmdir_op = "rmdir " + lio_root + "/" + iqn + "/tpgt_" + tpgt
++#	print "rmdir_op: " + rmdir_op
++	ret = os.system(rmdir_op)
++	if not ret:
++		print "Successfully released iSCSI Target Portal Group: " + iqn + " TPGT: " + tpgt
++	else:
++		lio_err("Unable to release iSCSI Target Portal Group: " + iqn + " TPGT: " + tpgt)
++	
++	return
++
++def lio_target_del_tpg(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	tpgt_file = lio_root + "/" + iqn + "/tpgt_" + tpgt
++	if os.path.isdir(tpgt_file) == False:
++		lio_err("iSCSI Target Port Group: " + tpgt_file + " does not exist")
++	
++	__lio_target_del_tpg(option, opt_str, value, parser, 1)
++	# Delete the ALUA secondary metadata directory on explict --deltpg or
++	# called from --deliqn
++	lio_alua_delete_secondary_md(iqn, tpgt)
++	return
++
++def lio_target_add_np(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	np = str(value[2]);
++
++	# Append default iSCSI Port is non is given.
++	if re.search(']', np)and not re.search(']:', np):
++		np = np + ":3260"
++	elif re.search(':\\Z', np):
++		np = np + "3260"
++	elif not re.search(':', np):
++		np = np + ":3260"
++
++	# Extract the iSCSI port and make sure it is a valid u16 value
++	if re.search(']:', np):
++		off = np.index(']:')
++		off += 2 
++		port = int(np[off:])
++	else:
++		off = np.index(':')
++		off += 1
++		port = int(np[off:])
++
++	if port == 0 or port > 65535:
++		lio_err("Illegal port value: " + str(port) + " for iSCSI network portal")
++
++	mkdir_op = "mkdir -p " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np/" + np
++#	print "mkdir_op: " + mkdir_op
++	ret = os.system(mkdir_op)
++	if not ret:
++		print "Successfully created network portal: " + np + " created " + iqn + " TPGT: " + tpgt 
++		lio_alua_check_secondary_md(iqn, tpgt)
++	else:
++		lio_err("Unable to create network portal: " + np + " created " + iqn + " TPGT: " + tpgt)
++
++	return
++
++def lio_target_del_np(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	np = str(value[2]);
++
++	rmdir_op = "rmdir " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np/" + np
++#	print "rmdir_op: " + rmdir_op
++	ret = os.system(rmdir_op)
++	if not ret:
++		print "Successfully released network portal: " + np + " created " + iqn + " TPGT: " + tpgt
++	else:
++		lio_err("Unable to release network portal: " + np + " created " + iqn + " TPGT: " + tpgt)
++
++	return
++
++def lio_target_add_port(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++	port_name = str(value[3]);
++	tcm_obj = str(value[4]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if os.path.isdir(lun_dir):
++		lio_err("iSCSI Target Logical Unit ConfigFS directory already exists")
++
++	mkdir_op = "mkdir -p " + lun_dir
++#	print "mkdir_op: " + mkdir_op
++	ret = os.system(mkdir_op)
++	if ret:
++		lio_err("Unable to create iSCSI Target Logical Unit ConfigFS directory")
++
++	port_src = tcm_root + "/" + tcm_obj
++	port_dst = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun + "/" + port_name
++	link_op = "ln -s " + port_src + " " + port_dst
++#	print "link_op: " + link_op
++	ret = os.system(link_op)
++	if not ret:
++		print "Successfully created iSCSI Target Logical Unit"
++		lio_alua_check_secondary_md(iqn, tpgt)
++		lio_alua_set_secondary_write_md(iqn, tpgt, lun)
++	else:
++		os.rmdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun)
++		lio_err("Unable to create iSCSI Target Logical Unit symlink")
++
++	return
++
++def lio_target_add_tpg(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	tpg_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt
++	if os.path.isdir(tpg_dir):
++		lio_err("iSCSI Target Portal Group directory already exists")
++
++	mkdir_op = "mkdir -p " + tpg_dir
++	ret = os.system(mkdir_op)
++	if ret:
++		lio_err("Unable to create iSCSI Target Portal Group ConfigFS directory")
++	else:
++		print "Successfully created iSCSI Target Portal Group"
++		lio_alua_check_secondary_md(iqn, tpgt)
++
++	return
++
++def __lio_target_del_port(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	port_root = os.listdir(lun_dir)
++
++	for port in port_root:
++		if port == "alua_tg_pt_gp":
++			continue
++		if port == "alua_tg_pt_offline":
++			continue
++		if port == "alua_tg_pt_status":
++			continue
++		if port == "alua_tg_pt_write_md":
++			continue
++
++		if not os.path.islink(lun_dir + "/" + port):
++			continue
++
++		unlink_op = "unlink " + lun_dir + "/" + port
++#		print "del_portunlink_op: " + unlink_op
++		ret = os.system(unlink_op)
++		if ret:
++			lio_err("Unable to unlink iSCSI Target Logical Unit")
++
++	rmdir_op= "rmdir " + lun_dir
++#	print "del_port rmdir_op: " + rmdir_op
++	ret = os.system(rmdir_op);
++	if not ret:
++		print "Successfully deleted iSCSI Target Logical Unit"
++	else:
++		lio_err("Unable to rmdir iSCSI Target Logical Unit configfs directory")
++
++	return
++
++def lio_target_del_port(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if os.path.isdir(lun_dir) == False:
++		lio_err("LIO-Target Port/LUN directory: " + lun_dir + " does not exist")
++
++	__lio_target_del_port(option, opt_str, value, parser)
++	# Delete the ALUA secondary metadata file for this Port/LUN
++	# during an explict --dellun
++	lio_alua_delete_secondary_md_port(iqn, tpgt, lun)
++
++	return
++
++def lio_target_tpg_disableauth(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	
++	enable_op = "echo 0 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/authentication"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to disable iSCSI Authentication on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully disabled iSCSI Authentication on iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_tpg_demomode(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	enable_op = "echo 1 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/generate_node_acls"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to disable Initiator ACL mode (Enable DemoMode) on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully disabled Initiator ACL mode (Enabled DemoMode) on iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_disable_lunwp(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	mapped_lun = str(value[3]);
++
++	disable_op = "echo 0 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun + "/write_protect"
++	ret = os.system(disable_op)
++	if ret:
++		lio_err("Unable to disable WriteProtect for Mapped LUN: " + mapped_lun + " for " + initiator_iqn + " on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully disabled WRITE PROTECT for Mapped LUN: " + mapped_lun + " for " + initiator_iqn + " on iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_enable_auth(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	enable_op = "echo 1 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/authentication"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to enable iSCSI Authentication on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully enabled iSCSI Authentication on iSCSI Target Portal Group: " + iqn + " " + tpgt
++	return
++
++def lio_target_enable_lunwp(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	mapped_lun = str(value[3]);
++
++	enable_op = "echo 1 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun + "/write_protect"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to enable WriteProtect for Mapped LUN: " + mapped_lun + " for " + initiator_iqn + " on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully enabled WRITE PROTECT for Mapped LUN: " + mapped_lun + " for " + initiator_iqn + " on iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_enable_tpg(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	enable_op = "echo 1 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/enable"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to enable iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully enabled iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_disable_tpg(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	disable_op = "echo 0 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/enable"
++	ret = os.system(disable_op)
++	if ret:
++		lio_err("Unable to disable iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully disabled iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_enableaclmode(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	enable_op = "echo 0 > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/generate_node_acls"
++	ret = os.system(enable_op)
++	if ret:
++		lio_err("Unable to enable Initiator ACL mode (Disabled DemoMode) on iSCSI Target Portal Group: " + iqn + " " + tpgt)
++        else:
++                print "Successfully enabled Initiator ACL mode (Disabled DemoMode) on iSCSI Target Portal Group: " + iqn + " " + tpgt
++        return
++
++
++def lio_target_add_lunacl(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	tpg_lun = str(value[3]);
++	mapped_lun = str(value[4]);
++
++	mkdir_op = "mkdir -p " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun
++	ret = os.system(mkdir_op)
++	if ret:
++		lio_err("Unable to add iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	addlunacl_op = "ln -s " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + tpg_lun + " " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun + "/lio_lun"
++
++	ret = os.system(addlunacl_op)
++	if ret:
++		lio_err("Unable to add iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully added iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++		lio_alua_check_secondary_md(iqn, tpgt)
++
++	return
++
++def lio_target_del_lunacl(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	mapped_lun = str(value[3]);
++
++	lun_link_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun
++	for lun_acl_link in os.listdir(lun_link_dir):
++		if lun_acl_link == "write_protect":
++			continue
++
++		if not os.path.islink(lun_link_dir + "/" + lun_acl_link):
++			continue;
++
++		unlink_op = "unlink " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun + "/" + lun_acl_link
++#		print "unlink_op: " + unlink_op
++		ret = os.system(unlink_op)
++		if ret:
++			lio_err("Unable to unlink iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++		
++	dellunacl_op = "rmdir " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/lun_" + mapped_lun
++	ret = os.system(dellunacl_op)
++	if ret:
++		lio_err("Unable to delete iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully deleted iSCSI Initiator Mapped LUN: " + mapped_lun + " ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_add_nodeacl(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	
++	addnodeacl_op = "mkdir -p " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn
++	ret = os.system(addnodeacl_op)
++	if ret:
++		lio_err("Unable to add iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully added iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++		lio_alua_check_secondary_md(iqn, tpgt)
++
++	return
++
++def lio_target_del_nodeacl(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++
++	nacl_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn
++	lun_acl_root = os.listdir(nacl_dir)
++	for lun_acl in lun_acl_root:
++		ret = re.search('lun_', lun_acl)
++		if not ret:
++			continue
++		lun_delacl_val = [iqn,tpgt,initiator_iqn,lun_acl[4:]]
++		lio_target_del_lunacl(None, None, lun_delacl_val, None)
++
++	delnodeacl_op = "rmdir " + nacl_dir
++	ret = os.system(delnodeacl_op)
++	if ret:
++		lio_err("Unable to delete iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully deleted iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_set_chap_auth(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	user = str(value[3]);
++	password = str(value[4]);
++
++	auth_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/auth/"
++
++	if not os.path.isdir(auth_dir):
++		lio_err("iSCSI Initiator ACL " + initiator_iqn + " does not exist for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	setuser_op = "echo -n " + user + " > " + auth_dir + "/userid"
++	ret = os.system(setuser_op)	
++	if ret:
++		lio_err("Unable to set CHAP username for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	setpassword_op = "echo -n " + password + " > " + auth_dir + "/password"
++	ret = os.system(setpassword_op)
++	if ret:
++		lio_err("Unable to set CHAP password for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully set CHAP authentication for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_set_chap_mutual_auth(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	user_mutual = str(value[3]);
++	password_mutual = str(value[4]);
++
++	auth_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/auth/"
++
++	if not os.path.isdir(auth_dir):
++		lio_err("iSCSI Initiator ACL " + initiator_iqn + " does not exist for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	setuser_op = "echo -n " + user_mutual + " > " + auth_dir + "/userid_mutual"
++	ret = os.system(setuser_op)
++	if ret:
++		lio_err("Unable to set mutual CHAP username for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	setpassword_op = "echo -n " + password_mutual + " > " + auth_dir + "/password_mutual"
++	ret = os.system(setpassword_op)
++	if ret:
++		lio_err("Unable to set mutual CHAP password for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully set mutual CHAP authentication for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt	
++	
++	return
++
++def lio_target_set_chap_discovery_auth(option, opt_str, value, parser):
++	user = str(value[0]);
++	password = str(value[1]);
++
++        auth_dir = lio_root + "/discovery_auth"
++        if not os.path.isdir(auth_dir):
++                lio_err("iSCSI Discovery Authentication directory " + auth_dir + " does not exist")
++
++        setuser_op = "echo -n " + user + " > " + auth_dir + "/userid"
++        ret = os.system(setuser_op)
++        if ret:
++		lio_err("Unable to set CHAP username for iSCSI  Discovery Authentication")
++
++        setpassword_op = "echo -n " + password + " > " + auth_dir + "/password"
++        ret = os.system(setpassword_op)
++        if ret:
++                lio_err("Unable to set CHAP password for iSCSI Discovery Authentication")
++        else:
++                print "Successfully set CHAP authentication for iSCSI Discovery Authentication"
++
++	return
++
++def lio_target_set_chap_mutual_discovery_auth(option, opt_str, value, parser):
++	user_mutual = str(value[0]);
++	password_mutual = str(value[1]);
++
++	auth_dir = lio_root + "/discovery_auth"
++	if not os.path.isdir(auth_dir):
++		lio_err("iSCSI Discovery Authentication directory " + auth_dir + " does not exist")
++
++	setuser_op = "echo -n " + user_mutual + " > " + auth_dir + "/userid_mutual"
++	ret = os.system(setuser_op)
++	if ret:
++		lio_err("Unable to set mutual CHAP username for iSCSI Discovery Authentication")
++
++	setpassword_op = "echo -n " + password_mutual + " > " + auth_dir + "/password_mutual"
++	ret = os.system(setpassword_op)
++	if ret:
++		lio_err("Unable to set mutual CHAP password for iSCSI Discovery Authentication")
++	else:
++		print "Successfully set mutual CHAP authentication for iSCSI Discovery Authentication"
++
++	return
++
++def lio_target_set_enforce_discovery_auth(option, opt_str, value, parser):
++	value = str(value);
++	
++	da_attr = lio_root + "/discovery_auth/enforce_discovery_auth"
++	if not os.path.isfile(da_attr):
++		lio_err("iSCSI Discovery Authentication directory does not exist")
++	
++	da_op = "echo " + value + " > " + da_attr;
++	ret = os.system(da_op)
++	if ret:
++		lio_err("Unable to set da_attr: " + da_attr)
++
++	if value == "1":
++		print "Successfully enabled iSCSI Discovery Authentication enforcement"
++	else:
++		print "Successfully disabled iSCSI Discovery Authentication enforcement"
++
++	return
++
++
++def lio_target_set_node_tcq(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++	depth = str(value[3]);
++
++	setnodetcq_op = "echo " + depth + " > " + lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/cmdsn_depth"
++	ret = os.system(setnodetcq_op)
++	if ret:
++		lio_err("Unable to set TCQ: " + depth + " for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++	else:
++		print "Successfully set TCQ: " + depth + " for iSCSI Initaitor ACL " + initiator_iqn + " for iSCSI Target Portal Group: " + iqn + " " + tpgt
++
++	return
++
++def lio_target_alua_set_tgptgp(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++	tg_pt_gp_name = str(value[3])
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if not os.path.isdir(lun_dir):
++		lio_err("LIO-Target Port/LUN: " + lun + " does not exist on: " + iqn + " " + tpgt)
++
++	set_tp_pt_gp_op = "echo " + tg_pt_gp_name + " > " + lun_dir + "/alua_tg_pt_gp"
++	ret = os.system(set_tp_pt_gp_op)
++	if ret:
++		lio_err("Unable to set ALUA Target Port Group: " + tg_pt_gp_name + " for LUN: " + lun + " on " + iqn + " " + tpgt)
++	else:
++		print "Successfully set ALUA Target Port Group: " + tg_pt_gp_name + " for LUN: " + lun + " on " + iqn + " " + tpgt
++
++	return
++
++def lio_target_alua_set_tgpt_offline(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if not os.path.isdir(lun_dir):
++		lio_err("LIO-Target Port/LUN: " + lun + " does not exist on: " + iqn + " " + tpgt)
++
++	set_tg_pt_gp_offline_op = "echo 1 > " + lun_dir + "/alua_tg_pt_offline"
++	ret = os.system(set_tg_pt_gp_offline_op)
++	if ret:
++		lio_err("Unable to set ALUA secondary state OFFLINE bit for LUN: " + lun + " on " + iqn + " " + tpgt)
++	else:
++		print "Successfully set ALUA secondary state OFFLINE for LUN: " + lun + " on " + iqn + " " + tpgt
++
++	return
++
++def lio_target_alua_clear_tgpt_offline(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if not os.path.isdir(lun_dir):
++		lio_err("LIO-Target Port/LUN: " + lun + " does not exist on: " + iqn + " " + tpgt)
++
++	set_tg_pt_gp_offline_op = "echo 0 > " + lun_dir + "/alua_tg_pt_offline"
++	ret = os.system(set_tg_pt_gp_offline_op)
++	if ret:
++		lio_err("Unable to clear ALUA secondary state OFFLINE for LUN: " + lun + " on " + iqn + " " + tpgt)
++	else:
++		print "Successfully cleared ALUA secondary state OFFLINE for LUN: " + lun + " on " + iqn + " " + tpgt
++	return
++
++def lio_target_show_chap_auth(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++
++	auth_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/auth/"
++
++	if not os.path.isdir(auth_dir):
++		lio_err("iSCSI Initiator ACL " + initiator_iqn + " does not exist for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	for auth in os.listdir(auth_dir):
++		p = os.open(auth_dir + "/" + auth, 0)
++		value = os.read(p, 256)
++		print auth + ": " + value.rstrip()
++		os.close(p)	
++
++	return
++
++def lio_target_show_chap_discovery_auth(option, opt_str, value, parser):
++
++	auth_dir = lio_root + "/discovery_auth"
++	if not os.path.isdir(auth_dir):
++		lio_err("iSCSI Discovery Authentication directory " + auth_dir + " does not exist")
++
++	for auth in os.listdir(auth_dir):
++		p = os.open(auth_dir + "/" + auth, 0)
++		value = os.read(p, 256)
++		print auth + ": " + value.rstrip()
++		os.close(p)
++
++	return
++
++def lio_target_show_node_tcq(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2]);
++	initiator_iqn = initiator_iqn.lower();
++
++	nacl = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn
++	if not os.path.isdir(nacl):
++		lio_err("iSCSI Initiator ACL: " + initiator_iqn + " does not exist for iSCSI Target Portal Group: " + iqn + " " + tpgt)
++
++	tcq_depth_file = nacl + "/cmdsn_depth"
++	p = os.open(tcq_depth_file, 0)
++	value = os.read(p, 8)
++	print value.rstrip()
++	os.close(p)
++
++	return
++
++def lio_target_alua_show_tgptgp(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	lun = str(value[2]);
++
++	lun_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++	if not os.path.isdir(lun_dir):
++		lio_err("LIO-Target Port/LUN: " + lun + " does not exist on: " + iqn + " " + tpgt)
++
++	show_tp_pt_gp_op = "cat " + lun_dir + "/alua_tg_pt_gp"
++	ret = os.system(show_tp_pt_gp_op)
++	if ret:
++		lio_err("Unable to show ALUA Target Port Group: " + tg_pt_gp_name + " for LUN: " + lun + " on " + iqn + " " + tpgt)
++
++	return
++
++def lio_target_list_endpoints(option, opt_str, value, parser):
++
++	iqn_root = os.listdir(lio_root)
++	
++	for iqn in iqn_root:
++		if iqn == "lio_version":
++			continue
++		if iqn == "discovery_auth":
++			continue
++
++		print "\------> " + iqn
++
++		tpg_root = lio_root + "/" + iqn
++		for tpg in os.listdir(tpg_root):
++			if tpg == "fabric_statistics":
++				continue
++
++			p = os.open(tpg_root + "/" + tpg + "/param/TargetAlias", 0)
++			value = os.read(p, 256)
++			print "        \-------> " + tpg + "  TargetAlias: " + value.rstrip()
++			os.close(p)
++
++			print "         TPG Status:",
++			p = os.open(tpg_root + "/" + tpg + "/enable", 0)
++			value = os.read(p, 8)
++			enable_bit = value.rstrip();
++			if enable_bit == '1':
++				print "ENABLED"
++			else:
++				print "DISABLED"
++			os.close(p)
++
++			print "         TPG Network Portals:"
++			np_root = tpg_root + "/" + tpg + "/np"
++			for np in os.listdir(np_root):
++				print "                 \-------> " + np
++
++			print "         TPG Logical Units:"
++			lun_root = tpg_root + "/" + tpg + "/lun"
++			for lun in os.listdir(lun_root):
++				port_dir = lun_root + "/" + lun
++				for port in os.listdir(port_dir):
++					if port == "alua_tg_pt_gp":
++						continue
++					if port == "alua_tg_pt_offline":
++						continue
++					if port == "alua_tg_pt_status":
++						continue
++					if port == "alua_tg_pt_write_md":
++						continue
++					if port == "statistics":
++						continue
++					
++					port_link = port_dir + "/" + port
++					if not os.path.islink(port_link):
++						continue
++
++					sourcelink = os.readlink(port_link)
++					# Skip over ../../../../../ in sourcelink"		
++					print "                 \-------> " + lun + "/" + port + " -> " + sourcelink[18:]
++					
++
++	return
++
++def lio_target_list_lunacls(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	iqn_root = os.listdir(lio_root)
++
++	nacl_root_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls"
++	nacl_root = os.listdir(nacl_root_dir)
++	for nacl in nacl_root:
++		print "\------> InitiatorName ACL: " + nacl
++		print "         Logical Unit ACLs: "
++		lun_root_dir = nacl_root_dir + "/" + nacl
++		lun_root = os.listdir(lun_root_dir)
++		for lun in lun_root:
++			ret = re.search('lun_', lun)
++			if not ret:
++				continue
++
++			wp_attrib = lun_root_dir + "/" + lun + "/write_protect"
++			wp_file = open(wp_attrib);
++			line = wp_file.readline()
++			wp_bit = line.rstrip()
++			if wp_bit == '1':
++				wp_info = "ENABLED"
++			else:
++				wp_info = "DISABLED"
++			
++			lun_link_dir = lun_root_dir + "/" + lun
++			for lun_link in os.listdir(lun_link_dir):
++				if lun_link == "write_protect":
++					continue
++				if lun_link == "statistics":
++					continue
++
++				if not os.path.islink(lun_link_dir + "/" + lun_link):
++					continue
++				
++				sourcelink = os.readlink(lun_link_dir + "/" + lun_link)
++				# Skip over ../../../../../../ in sourcelink"
++				print "         \-------> " + lun + " -> " + sourcelink[21:]
++				print "                   \-------> Write Protect for " + lun + ": " + wp_info
++
++	return
++
++def lio_target_list_nodeacls(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	iqn_root = os.listdir(lio_root)
++	
++	nacl_root_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls"
++	nacl_root = os.listdir(nacl_root_dir)
++	for nacl in nacl_root:
++		print "\------> InitiatorName: " + nacl
++		info_attrib = nacl_root_dir + "/" + nacl + "/info"
++		file = open(info_attrib, "r")
++		line = file.readline()
++		ret = re.search('No active iSCSI Session for Initiator Endpoint', line)
++		if ret:	
++			print "         No active iSCSI Session for Initiator Endpoint"
++		else:	
++			line = file.readline()
++			while line:
++				print "         " + line.rstrip()
++				line = file.readline()
++
++		file.close()
++		
++	return
++
++def lio_target_list_nps(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	np_root = os.listdir(lio_root + "/" + iqn + "/tpgt_" + tpgt + "/np")
++	for np in np_root:
++		print np
++
++	return
++
++def lio_target_list_targetnames(option, opt_str, value, parser):
++	
++	iqn_root = os.listdir(lio_root)
++	
++	# Loop through LIO-Target IQN list
++	for iqn in iqn_root:
++		if iqn == "lio_version":
++			continue
++		if iqn == "discovery_auth":
++			continue
++
++		print iqn	
++
++	return
++
++def lio_target_list_node_attr(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2])
++
++	attr_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/attrib/"
++	if os.path.isdir(attr_dir) == False:
++		lio_err("Unable to locate node attr_dir: " + attr_dir)
++
++	for attr in os.listdir(attr_dir):
++		p = open(attr_dir + "/" + attr, 'rU')
++		if not p:
++			lio_err("Unable to open attr: " + attr_dir + "/" + attr)
++
++		val = p.read()
++		p.close()
++
++		print attr + "=" + val.rstrip()
++	
++	return
++
++def lio_target_set_node_attr(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2])
++	attr = str(value[3])
++	val = str(value[4])
++
++	attr_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/attrib/"
++	if os.path.isdir(attr_dir) == False:
++		lio_err("Unable to locate node attr_dir: " + attr_dir)
++
++	p = open(attr_dir + "/" + attr, 'w')
++	if not p:
++		lio_err("Unable to open node attr: " + attr_dir + "/" + attr)
++
++	ret = p.write(val)
++	if ret:
++		lio_err("Unable to set node attr: " + attr_dir + "/" + attr)
++
++	p.close()
++	print "Successfully set Initiator Node attribute: " + attr + " to: " + val
++
++	return
++
++def lio_target_list_node_param(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	initiator_iqn = str(value[2])
++
++	param_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/" + initiator_iqn + "/param"
++	if os.path.isdir(param_dir) == False:
++		lio_err("Unable to locate node param_dir: " + param_dir)
++
++	for param in os.listdir(param_dir):
++		p = open(param_dir + "/" + param, 'rU')
++		if not p:
++			lio_err("Unable to open attr: " + param_dir + "/" + param)
++
++		val = p.read()
++		p.close()
++
++		print param + "=" + val.rstrip()
++
++	return
++
++
++def lio_target_list_tpg_attr(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	attr_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib"
++	if os.path.isdir(attr_dir) == False:
++		lio_err("Unable to locate tpg attr_dir: " + attr_dir)
++
++	for attr in os.listdir(attr_dir):
++		p = open(attr_dir + "/" + attr, 'rU')
++		if not p:
++			lio_err("Unable to open attr: " + attr_dir + "/" + attr)
++
++		val = p.read()
++		p.close()
++
++		print attr + "=" + val.rstrip()
++
++	return
++
++def lio_target_set_tpg_attr(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	attr = str(value[2]);
++	val = str(value[3]);
++
++	attr_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib"
++	if os.path.isdir(attr_dir) == False:
++		lio_err("Unable to locate tpg attr_dir: " + attr_dir)
++
++	p = open(attr_dir + "/" + attr, 'w')
++	if not p:
++		lio_err("Unable to open tpg attr: " + attr_dir + "/" + attr)
++
++	ret = p.write(val)
++	if ret:
++		lio_err("Unable to set tpg attr: " + attr_dir + "/" + attr)
++
++	p.close()
++	print "Successfully set TPG attribute: " + attr + " to: " + val
++
++	return
++
++def lio_target_list_tpg_param(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++
++	param_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/param"
++	if os.path.isdir(param_dir) == False:
++		lio_err("Unable to locate tpg param dir: " + param_dir)
++
++	for param in os.listdir(param_dir):
++		p = open(param_dir + "/" + param, 'rU')
++		if not p:
++			lio_err("Unable to open param: " + param_dir + "/" + param)
++
++		val = p.read()
++		p.close()
++
++		print param + "=" + val.rstrip()
++
++	return
++
++def lio_target_set_tpg_param(option, opt_str, value, parser):
++	iqn = str(value[0]);
++	iqn = iqn.lower();
++	tpgt = str(value[1]);
++	param = str(value[2]);
++	val = str(value[3]);
++
++	param_dir = lio_root + "/" + iqn + "/tpgt_" + tpgt + "/param"
++	if os.path.isdir(param_dir) == False:
++		lio_err("Unable to locate tpg param dir: " + param_dir)
++
++	p = open(param_dir + "/" + param, 'w')
++	if not p:
++		lio_err("Unable to open tpg attr: " + param_dir + "/" + param)
++
++	val = val + " "
++	ret = p.write(val)
++	if ret:
++		lio_err("Unable to write tpg attr: " + param_dir + "/" + param)
++
++	p.close()
++	print "Successfully set TPG parameter: " + param + " to: " + val
++
++	return
++
++def lio_target_unload(option, opt_str, value, parser):
++
++	if not os.path.isdir(lio_root):
++		lio_err("Unable to access lio_root: " + lio_root)
++
++	iqn_root = os.listdir(lio_root)
++
++	# Loop through LIO-Target IQN list
++	for iqn in iqn_root:
++		if iqn == "lio_version":
++			continue
++		if iqn == "discovery_auth":
++			continue
++
++		# Loop through LIO-Target IQN+TPGT list
++		tpg_root = os.listdir(lio_root + "/" + iqn);
++		for tpgt_tmp in tpg_root:
++			if tpgt_tmp == "fabric_statistics": 
++				continue
++
++			tpgt_tmp2 = tpgt_tmp.split('_')
++			tpgt = tpgt_tmp2[1]
++
++			tpg_val = [iqn,tpgt]
++			__lio_target_del_tpg(None, None, tpg_val, None, 0)	
++
++		__lio_target_del_iqn(None, None, iqn, None, 0)
++
++	rmdir_op = "rmdir " + lio_root
++	ret = os.system(rmdir_op)
++	if ret:
++		print "Unable to release lio_root: " + lio_root
++
++	rmmod_op = "rmmod iscsi_target_mod"
++	ret = os.system(rmmod_op)
++	if ret:
++		print "Unable to unload iscsi_target_mod"
++
++	return
++
++def lio_target_version(option, opt_str, value, parser):
++
++	os.system("cat /sys/kernel/config/target/iscsi/lio_version")
++	return
++
++def main():
++
++	parser = OptionParser()
++	parser.add_option("--addlunacl", action="callback", callback=lio_target_add_lunacl, nargs=5,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN TPG_LUN MAPPED_LUN", help="Add iSCSI Initiator LUN ACL to LIO-Target Portal Group LUN")
++	parser.add_option("--addnodeacl", action="callback", callback=lio_target_add_nodeacl, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="Add iSCSI Initiator ACL to LIO-Target Portal Group")
++	parser.add_option("--addnp", action="callback", callback=lio_target_add_np, nargs=3,
++		type="string", dest="TARGET_IQN TPGT IP:PORT", help="Add LIO-Target IPv6 or IPv4 network portal")
++	parser.add_option("--addlun", action="callback", callback=lio_target_add_port, nargs=5,
++		type="string", dest="TARGET_IQN TPGT LUN PORT_ALIAS TCM_HBA/DEV ", help="Create LIO-Target Logical Unit")
++	parser.add_option("--addtpg", action="callback", callback=lio_target_add_tpg, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Create LIO-Target portal group")
++	parser.add_option("--aluasecmd", action="callback", callback=lio_alua_process_secondary_md, nargs=3,
++		type="string", dest="TARGET_IQN TPGT LUN", help="Process ALUA secondary metadata for Port/LUN");
++        parser.add_option("--cleartgptoff","--clearaluaoff", action="callback", callback=lio_target_alua_clear_tgpt_offline, nargs=3,
++                type="string", dest="TARGET_IQN TPGT LUN", help="Clear ALUA Target Port Secondary State OFFLINE")
++	parser.add_option("--dellunacl", action="callback", callback=lio_target_del_lunacl, nargs=4,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN MAPPED_LUN", help="Delete iSCSI Initiator LUN ACL from LIO-Target Portal Group LUN")
++	parser.add_option("--delnodeacl", action="callback", callback=lio_target_del_nodeacl, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="Delete iSCSI Initiator ACL from LIO-Target Portal Group")
++	parser.add_option("--delnp", action="callback", callback=lio_target_del_np, nargs=3,
++		type="string", dest="TARGET_IQN TPGT IP:PORT", help="Delete LIO-Target IPv6 or IPv4 network portal")
++	parser.add_option("--deliqn", action="callback", callback=lio_target_del_iqn, nargs=1,
++		type="string", dest="TARGET_IQN", help="Delete LIO-Target IQN Endpoint")
++	parser.add_option("--dellun",  action="callback", callback=lio_target_del_port, nargs=3,
++		type="string", dest="TARGET_IQN TPGT LUN", help="Delete LIO-Target Logical Unit")
++	parser.add_option("--deltpg", action="callback", callback=lio_target_del_tpg, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Delete LIO-Target Portal Group")
++	parser.add_option("--demomode", "--permissive", action="callback", callback=lio_target_tpg_demomode, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Disable all iSCSI Initiator ACL requirements (enable DemoMode) for LIO-Target Portal Group (Disabled by default)")
++	parser.add_option("--disableauth", action="callback", callback=lio_target_tpg_disableauth, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Disable iSCSI Authentication for LIO-Target Portal Group (Enabled by default)")
++	parser.add_option("--disablelunwp", action="callback", callback=lio_target_disable_lunwp, nargs=4,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN MAPPED_LUN", help="Clear Write Protect bit for iSCSI Initiator LUN ACL")
++	parser.add_option("--disabletpg", action="callback", callback=lio_target_disable_tpg, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Disable LIO-Target Portal Group")
++	parser.add_option("--enableaclmode", action="callback", callback=lio_target_enableaclmode, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Enable iSCSI Initiator ACL requirement mode for LIO-Target Portal Group (Enabled by default)")
++	parser.add_option("--enableauth", action="callback", callback=lio_target_enable_auth, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Enable iSCSI Authentication for LIO-Target Portal Group (Enabled by default)")
++	parser.add_option("--enablelunwp", action="callback", callback=lio_target_enable_lunwp, nargs=4,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN MAPPED_LUN", help="Set Write Protect bit for iSCSI Initiator LUN ACL")
++	parser.add_option("--enabletpg", action="callback", callback=lio_target_enable_tpg, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="Enable LIO-Target Portal Group")
++	parser.add_option("--listendpoints", action="callback", callback=lio_target_list_endpoints, nargs=0,
++		help="List iSCSI Target Endpoints")
++	parser.add_option("--listlunacls", action="callback", callback=lio_target_list_lunacls, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="List iSCSI Initiator LUN ACLs for LIO-Target Portal Group")
++	parser.add_option("--listnodeacls", action="callback", callback=lio_target_list_nodeacls, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="List iSCSI Initiator ACLs for LIO-Target Portal Group")
++	parser.add_option("--listnodeattr", action="callback", callback=lio_target_list_node_attr, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="List iSCSI Initiator ACL attributes for LIO-Target Portal Group")
++	parser.add_option("--listnodeparam", action="callback", callback=lio_target_list_node_param, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="List iSCSI Initiator ACL RFC-3720 parameters for LIO-Target Portal Group")
++	parser.add_option("--listnps", action="callback", callback=lio_target_list_nps, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="List LIO-Target Portal Group Network Portals")
++	parser.add_option("--listtargetnames", action="callback", callback=lio_target_list_targetnames, nargs=0,
++		help="List iSCSI Target Names")
++	parser.add_option("--listtpgattr", action="callback", callback=lio_target_list_tpg_attr, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="List LIO-Target Portal Group attributes")
++	parser.add_option("--listtpgparam", action="callback", callback=lio_target_list_tpg_param, nargs=2,
++		type="string", dest="TARGET_IQN TPGT", help="List LIO-Target Portal Group RFC-3720 parameters")
++	parser.add_option("--setchapauth", action="callback", callback=lio_target_set_chap_auth, nargs=5,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN USER PASS", help="Set CHAP authentication information for iSCSI Initiator Node ACL");
++	parser.add_option("--setchapmutualauth", action="callback", callback=lio_target_set_chap_mutual_auth, nargs=5,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN USER_IN PASS_IN", help="Set CHAP mutual authentication information for iSCSI Initiator Node ACL");
++        parser.add_option("--setchapdiscenforce", action="callback", callback=lio_target_set_enforce_discovery_auth, nargs=1,
++                type="string", dest="Enforce=1, NoEnforcement=0", help="Set CHAP authentication enforcement for iSCSI Discovery Sessions");
++        parser.add_option("--setchapdiscauth", action="callback", callback=lio_target_set_chap_discovery_auth, nargs=2,
++                type="string", dest="USER PASS", help="Set CHAP authentication information for iSCSI Discovery Authentication")
++        parser.add_option("--setchapdiscmutualauth", action="callback", callback=lio_target_set_chap_mutual_discovery_auth, nargs=2,
++		type="string", dest="USER PASS", help="Set CHAP mutual authentication information for iSCSI Discovery Authentication")
++	parser.add_option("--setnodeattr", action="callback", callback=lio_target_set_node_attr, nargs=5,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN <ATTRIBUTE> <VALUE>",  help="Set iSCSI Initiator ACL Attribute")
++	parser.add_option("--setnodetcq", action="callback", callback=lio_target_set_node_tcq, nargs=4,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN DEPTH", help="Set iSCSI Initiator ACL TCQ Depth for LIO-Target Portal Group")
++	parser.add_option("--settpgattr", action="callback", callback=lio_target_set_tpg_attr, nargs=4,
++		type="string", dest="TARGET_IQN TPGT <ATTRIB> <VALUE>", help="Set LIO-Target Port Group Attribute")
++	parser.add_option("--settpgparam", action="callback", callback=lio_target_set_tpg_param, nargs=4,
++		type="string", dest="TARGET_IQN TPGT <PARAMETER> <VALUE>", help="Set LIO-Target Port Group RFC-3720 parameter")
++	parser.add_option("--settgptgp","--setaluatpg", action="callback", callback=lio_target_alua_set_tgptgp, nargs=4,
++		type="string", dest="TARGET_IQN TPGT LUN TG_PT_GP_NAME", help="Set ALUA Target Port Group for LIO-Target Port/LUN")
++	parser.add_option("--settgptoff","--setaluaoff", action="callback", callback=lio_target_alua_set_tgpt_offline, nargs=3,
++		type="string", dest="TARGET_IQN TPGT LUN", help="Set ALUA Target Port Secondary State OFFLINE")
++	parser.add_option("--showchapauth", action="callback", callback=lio_target_show_chap_auth, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="Show CHAP authentication information for iSCSI Initiator Node ACL");
++	parser.add_option("--showchapdiscauth", action="callback", callback=lio_target_show_chap_discovery_auth, nargs=0,
++		help="Show CHAP authentication information for iSCSI Discovery portal");
++	parser.add_option("--shownodetcq", action="callback", callback=lio_target_show_node_tcq, nargs=3,
++		type="string", dest="TARGET_IQN TPGT INITIATOR_IQN", help="Show iSCSI Initiator ACL TCQ Depth for LIO-Target Portal Group")
++	parser.add_option("--showtgptgp", action="callback", callback=lio_target_alua_show_tgptgp, nargs=3,
++		type="string", dest="TARGET_IQN TPGT LUN", help="Show ALUA Target Port Group for LIO-Target Port/LUN")
++	parser.add_option("--unload", action="callback", callback=lio_target_unload, nargs=0,
++		help="Unload LIO-Target")
++	parser.add_option("--version", action="callback", callback=lio_target_version, nargs=0,
++		help="Display LIO-Target version information")
++
++	(options, args) = parser.parse_args()
++	if len(sys.argv) == 1:
++		parser.print_help()
++		sys.exit(0)
++	elif not re.search('--', sys.argv[1]):
++		lio_err("Unknown CLI option: " + sys.argv[1])
++
++if __name__ == "__main__":
++	main()
+diff --git a/rtsadmin/tcm_dump.py b/rtsadmin/tcm_dump.py
+new file mode 100644
+index 0000000..e721a3c
+--- /dev/null
++++ b/rtsadmin/tcm_dump.py
+@@ -0,0 +1,366 @@
++import os, sys, shutil
++import subprocess as sub
++from subprocess import Popen, PIPE
++import string
++import re
++import datetime, time
++from optparse import OptionParser
++
++import tcm_node
++import tcm_pscsi
++import tcm_iblock
++import tcm_ramdisk
++import tcm_fileio
++
++import lio_dump
++import tcm_fabric
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def tcm_dump_hba_devices():
++	pass
++
++def tcm_dump_configfs(option, opt_str, value, parser):
++
++	if not os.path.isdir(tcm_root):
++		print "Unable to access tcm_root: " + tcm_root
++		sys.exit(1)
++
++	print "modprobe target_core_mod"
++
++	# Loop through ALUA Logical Unit Groups
++	# Note that the 'default_lu_gp' is automatically created when
++	# target_core_mod is loaded.
++	print "#### ALUA Logical Unit Groups"
++	for lu_gp in os.listdir(tcm_root + "/alua/lu_gps"):	
++		if lu_gp == "default_lu_gp":
++			continue
++
++		print "mkdir -p " + tcm_root + "/alua/lu_gps/" + lu_gp
++		lu_gp_id_file = tcm_root + "/alua/lu_gps/" + lu_gp + "/lu_gp_id"
++		p = os.open(lu_gp_id_file, 0)
++		value = os.read(p, 8)
++		os.close(p)
++		if not value:
++			continue
++		print "echo " + value.rstrip() + " > " + lu_gp_id_file
++
++	# Loop through HBA list
++	for f in os.listdir(tcm_root):
++		if f == "alua":
++			continue;
++		
++#		print "mkdir -p " + tcm_root + "/" + f
++
++		dev_root = tcm_root + "/" + f + "/"
++		for g in os.listdir(dev_root):
++			if g == "hba_info" or g == "hba_mode":
++				continue;
++			
++			# Dump device aka storage object
++			print "#### Parameters for TCM subsystem plugin storage object reference"
++			
++			# Generate subsystem dependent configfs ops for association to
++		 	# an target_core_mod storage object.
++			result = re.search('pscsi_', f)
++			if result:
++				dev = dev_root + g
++				params = tcm_pscsi.pscsi_get_params(dev)
++				if not params:
++					continue
++				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++			result = re.search('iblock_', f)
++			if result:
++				dev = dev_root + g
++				params = tcm_iblock.iblock_get_params(dev)
++				if not params:
++					continue
++				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++			result = re.search('rd_dr_', f)
++			if result:
++				dev = dev_root + g
++				params = tcm_ramdisk.rd_get_params(dev)	
++				if not params:
++					continue
++				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++			result = re.search('rd_mcp_', f)
++			if result:
++				dev = dev_root + g
++				params = tcm_ramdisk.rd_get_params(dev)
++				if not params:
++					continue
++				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++			result = re.search('fileio_', f)
++			if result:
++				dev = dev_root + g
++				params = tcm_fileio.fd_get_params(dev)
++				if not params:
++					continue
++				print "tcm_node --establishdev " + f + "/" + g + " " + str(params)
++
++			# Dump T10 VP Unit Serial for all non Target_Core_Mod/pSCSI objects
++			result = re.search('pscsi_', f)
++			if not result:
++				unit_serial_file = dev_root + g + "/wwn/vpd_unit_serial"
++				p = os.open(unit_serial_file, 0)
++				value = os.read(p, 512)
++				off = value.index('Number: ')
++				off += 8 # Skip over "Number: " 
++				unit_serial = value[off:]
++				# Note that this will handle read, parse and set any PR APTPL metadata
++				print "tcm_node --setunitserialwithmd " + f + "/" + g + " " + unit_serial.rstrip()
++				os.close(p)
++
++			# Dump device object alias
++			alias_file = dev_root + g + "/alias"
++			p = open(alias_file, 'r')
++			value = p.read(512)
++			value = value.rstrip()
++			p.close()
++			if value:
++				print "echo -n \"" + value + "\" > " + dev_root + g + "/alias"
++
++			# Dump ALUA Logical Unit Group
++			lu_gp_file = dev_root + g + "/alua_lu_gp"
++			p = os.open(lu_gp_file, 0)
++			value = os.read(p, 512)
++			os.close(p)
++			if value:
++				lu_gp_tmp = value.split('\n')
++				lu_gp_out = lu_gp_tmp[0]
++				off = lu_gp_out.index('Alias: ')
++				off += 7 # Skip over "Alias: "
++				lu_gp_name = lu_gp_out[off:]
++				# Only need to dump if storage object is NOT part of
++				# the 'default_lu_gp'
++				if not re.search(lu_gp_name, 'default_lu_gp'):
++					print "echo " + lu_gp_name + " > " + lu_gp_file
++
++			# Loop through ALUA Target Port Groups 
++			if os.path.isdir(dev_root + g + "/alua/") == True:
++				print "#### ALUA Target Port Groups"
++				for tg_pt_gp in os.listdir(dev_root + g + "/alua/"):
++					tg_pt_gp_id_file = dev_root + g + "/alua/" + tg_pt_gp + "/tg_pt_gp_id"
++					p = os.open(tg_pt_gp_id_file, 0)
++					value = os.read(p, 8)
++					os.close(p)
++					if not value:
++						continue
++					print "tcm_node --addaluatpgwithmd " + f + "/" + g + " " + tg_pt_gp + " " + value.rstrip()
++					# Dump the ALUA types
++					tg_pt_gp_type_file = dev_root + g + "/alua/" + tg_pt_gp + "/alua_access_type"
++					p = os.open(tg_pt_gp_type_file, 0)
++					value = os.read(p, 32)
++					os.close(p)
++					if value:
++						value = value.rstrip()
++						alua_type = 0
++
++						if re.search('Implict and Explict', value):
++							alua_type = 3
++						elif re.search('Explict', value):
++							alua_type = 2
++						elif re.search('Implict', value):
++							alua_type = 1
++
++						print "echo " + str(alua_type) + " > " + tg_pt_gp_type_file
++
++					# Dump the preferred bit
++					tg_pt_gp_pref_file = dev_root + g + "/alua/" + tg_pt_gp + "/preferred"
++					p = os.open(tg_pt_gp_pref_file, 0)
++					value = os.read(p, 8)
++					os.close(p)
++					if value:
++						print "echo " + value.rstrip() + " > " + tg_pt_gp_pref_file
++					# Dump the Active/NonOptimized Delay
++					tg_pt_gp_nonop_delay_file = dev_root + g + "/alua/" + tg_pt_gp + "/nonop_delay_msecs"
++					p = os.open(tg_pt_gp_nonop_delay_file, 0)
++					value = os.read(p, 8)
++					os.close(p)
++					if value:
++						print "echo " + value.rstrip() + " > " + tg_pt_gp_nonop_delay_file
++					# Dump the Transition Delay
++					tg_pt_gp_trans_delay_file = dev_root + g + "/alua/" + tg_pt_gp + "/trans_delay_msecs"
++					p = os.open(tg_pt_gp_trans_delay_file, 0)
++					value = os.read(p, 8)
++					os.close(p)
++					if value:
++						print "echo " + value.rstrip() + " > " + tg_pt_gp_trans_delay_file
++
++			# Dump device attributes
++			print "#### Attributes for " + dev_root + g
++			dev_attrib_root = dev_root + g + "/attrib/"
++			for h in os.listdir(dev_attrib_root):
++				# The hw_* prefixed attributes are RO
++				if h == "hw_queue_depth":
++					continue
++				if h == "hw_max_sectors":
++					continue
++				if h == "hw_block_size":
++					continue
++				# Do not change block-size for target_core_mod/pSCSI
++				if h == "block_size":
++					result = re.search('pscsi_', f)
++					if result:
++						continue
++
++				attrib_file = dev_attrib_root + h
++				p = os.open(attrib_file, 0)
++				value = os.read(p, 8)
++				print "echo " + value.rstrip() + " > " + attrib_file
++				os.close(p)
++
++			# Dump snapshot attributes
++			snap_attrib_root = dev_root + g + "/snap/"
++			if (os.path.isdir(snap_attrib_root) == False):
++				continue
++
++			snap_enabled = 0
++			enabled_attr_file = snap_attrib_root + "enabled"
++			p = open(enabled_attr_file, 'rU')
++			if not p:
++				continue
++			value = p.read()
++			enabled = value.rstrip()
++			p.close()
++			if enabled != "1":
++				continue
++
++			snap_enabled = 1
++			print "#### Snapshot Attributes for " + dev_root + g
++			for s in os.listdir(snap_attrib_root):
++				if s == "pid":
++					continue
++				if s == "usage":
++					continue
++				if s == "enabled":
++					continue
++
++				attrib_file = snap_attrib_root + s
++				p = open(attrib_file, 'rU')
++				value = p.read()
++				p.close()
++				attr_val = value.rstrip()
++				print "echo " + attr_val + " > " + attrib_file
++
++			if snap_enabled == 1:
++				print "tcm_node --lvsnapstart " + f + "/" + g
++
++def tcm_backup_to_file(option, opt_str, value, parser):
++	datetime = str(value)
++	
++	if not os.path.isdir(tcm_root):
++		print "Unable to access tcm_root: " + tcm_root
++		sys.exit(1)
++
++	backup_dir = "/etc/target/backup"
++	if not os.path.isdir(backup_dir):
++		op = "mkdir " + backup_dir
++		ret = os.system(op)
++		if ret:
++			print "Unable to open backup_dir"
++			sys.exit(1)
++
++	op = "tcm_dump --stdout"
++	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
++	if not p:
++		print "Unable to dump Target_Core_Mod/ConfigFS running state"
++		sys.exit(0)
++
++	print "Making backup of Target_Core_Mod/ConfigFS with timestamp: " + datetime 
++	backup_file = backup_dir + "/tcm_backup-" + datetime + ".sh"
++	if os.path.isfile(backup_file):
++		print "Target_Core_Mod backup_file: " + backup_file + "already exists, exiting"
++		p.close()
++		sys.exit(1)
++
++	back = open(backup_file, 'w')
++
++	line = p.readline()
++	while line:
++		print >>back, line.rstrip()
++		line = p.readline()
++
++	p.close()
++	back.close()
++	return backup_file
++
++def tcm_full_backup(option, opt_str, value, parser):
++	overwrite = str(value)
++
++	now = datetime.datetime.now()
++	tmp = str(now)
++	tmp2 = tmp.split(' ')
++	timestamp = tmp2[0] + "_" + tmp2[1]
++
++	tcm_file = "/etc/target/tcm_start.sh"
++	lio_file = "/etc/target/lio_start.sh"
++	lio_active = 0
++
++	ret = tcm_fabric.fabric_backup_to_file_all(timestamp)
++	if ret:
++		print "Unable to backup tcm_fabric.modules"	
++	
++	if os.path.isdir("/sys/kernel/config/target/iscsi"):
++		lio_file_new = lio_dump.lio_backup_to_file(None, None, timestamp, None)
++		if not lio_file_new:
++			sys.exit(1)
++		lio_active = 1
++		print "Generated LIO-Target config: " + lio_file_new
++
++
++	tcm_file_new = tcm_backup_to_file(None, None, timestamp, None)
++	if not tcm_file_new:
++		sys.exit(1)
++
++	print "Generated Target_Core_Mod config: " + tcm_file_new
++	
++	if overwrite != "1":
++		print "Not updating default config"
++		return
++
++	if lio_active:
++		ret = shutil.copyfile(lio_file_new, lio_file)
++		if ret:
++			print "Unable to copy " + lio_file_new
++			sys.exit(1)
++		print "Successfully updated default config " + lio_file
++
++	ret = shutil.copyfile(tcm_file_new, tcm_file)
++	if ret:
++		print "Unable to copy " + tcm_file_new
++		sys.exit(1)
++
++	print "Successfully updated default config " + tcm_file 
++
++def tcm_overwrite_default(option, opt_str, value, parser):
++
++	input = raw_input("Are you sure you want to overwrite the default configuration? Type 'yes': ")
++	if input != "yes":
++		sys.exit(0)
++
++	val = "1"
++	tcm_full_backup(None, None, val, None)
++
++def main():
++	
++	parser = OptionParser()
++	parser.add_option("--b","--backup", action="callback", callback=tcm_full_backup, nargs=1,
++		type="string", dest="OVERWRITE", help="Do backup of TCM and storage fabric modules, and optionally overwrite default config data")
++	parser.add_option("--o","--overwrite", action="callback", callback=tcm_overwrite_default, nargs=0,
++		help="Overwrite default config data of TCM and storage fabric modules")
++	parser.add_option("--s","--stdout", action="callback", callback=tcm_dump_configfs, nargs=0,
++		help="Dump running Target_Core_Mod/ConfigFS syntax to STDOUT")
++	parser.add_option("--t", "--tofile", action="callback", callback=tcm_backup_to_file, nargs=1,
++		type="string", dest="DATE_TIME", help="Backup running Target_Core_Mod/ConfigFS syntax to /etc/target/backup/tcm_backup-<DATE_TIME>.sh")
++
++	(options, args) = parser.parse_args()
++	if len(sys.argv) == 1:
++		parser.print_help()
++		sys.exit(0)
++	elif not re.search('--', sys.argv[1]):
++		print "Unknown CLI option: " + sys.argv[1]
++		sys.exit(1)
++
++if __name__ == "__main__":
++        main()
+diff --git a/rtsadmin/tcm_fabric.py b/rtsadmin/tcm_fabric.py
+new file mode 100644
+index 0000000..876a2b0
+--- /dev/null
++++ b/rtsadmin/tcm_fabric.py
+@@ -0,0 +1,532 @@
++import os, sys, shutil
++import subprocess as sub
++import string
++import re
++import datetime, time
++import optparse
++
++target_root = "/sys/kernel/config/target/"
++spec_root = "/var/target/fabric/"
++
++def fabric_configfs_dump(fabric_name, fabric_root, module_name):
++
++	if not os.path.isdir(fabric_root):
++		print "Unable to access fabric_root: " + fabric_root
++		sys.exit(1)
++
++	iqn_root = os.listdir(fabric_root)
++
++	# This will load up the fabric module
++	print "modprobe " + module_name
++	print "mkdir " + fabric_root
++
++#	print "#### " + fabric_name + " Discovery authentication information"
++	auth_dir = fabric_root + "/discovery_auth"
++	if os.path.isdir(auth_dir) == True:
++		for auth in os.listdir(auth_dir):
++			if auth == "authenticate_target":
++				continue
++
++			auth_file = auth_dir + "/" + auth
++			p = os.open(auth_file, 0)
++			value = os.read(p, 256)
++			ret = value.isspace()
++			if ret:
++				os.close(p)
++				continue
++			print "echo -n " + value.rstrip() + " > " + auth_file
++			os.close(p)
++
++	iqn_root = os.listdir(fabric_root)
++
++	# Loop through LIO-Target IQN list
++	for iqn in iqn_root:
++		if not os.path.isdir(fabric_root + "/" + iqn):
++			continue
++		if iqn == "lio_version":
++			continue
++		if iqn == "discovery_auth":
++			continue
++
++		# Loop through LIO-Target IQN+TPGT list
++		tpg_root = os.listdir(fabric_root + "/" + iqn);
++		for tpgt_tmp in tpg_root:
++			if tpgt_tmp == "fabric_statistics":
++				continue
++
++			tpgt_tmp2 = tpgt_tmp.split('_')
++			tpgt = tpgt_tmp2[1]
++
++#			print "#### Network portals for iSCSI Target Portal Group"
++#			np_root = os.listdir(fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/np")
++#			for np in np_root:
++#				print "mkdir -p " + fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/np/" + np
++
++
++			# Dump Nexus attribute (when available)
++                        nexus_file = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/nexus"
++                        if os.path.isfile(nexus_file):
++				print "mkdir -p " + fabric_root + "/" + iqn + "/tpgt_" + tpgt
++                                p = os.open(nexus_file, 0)
++                                value = os.read(p, 256)
++                                print "echo " + value.rstrip() + " > " + nexus_file
++                                os.close(p)
++
++			print "#### " + fabric_name + " Target Ports"
++			lun_root = os.listdir(fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/lun")
++			for lun_tmp in lun_root:
++				lun_tmp2 = lun_tmp.split('_')
++				lun = lun_tmp2[1]
++				
++				lun_dir = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun
++				print "mkdir -p " + lun_dir
++
++				port_root = os.listdir(lun_dir)
++				for port in port_root:
++					if port == "alua_tg_pt_gp":
++						continue
++					if port == "alua_tg_pt_offline":
++						continue
++					if port == "alua_tg_pt_status":
++						continue
++					if port == "alua_tg_pt_write_md":
++						continue
++					
++					if not os.path.islink(lun_dir + "/" + port):
++						continue
++
++					port_link = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/lun/lun_" + lun + "/" + port
++					sourcelink = os.readlink(port_link)
++					sourcelink2 = os.path.join(os.path.dirname(port_link), sourcelink)
++					print "ln -s " + sourcelink2 + " " + port_link
++
++				# Dump ALUA Target Port Group
++				tg_pt_gp_file = lun_dir + "/alua_tg_pt_gp"
++				p = os.open(tg_pt_gp_file, 0)
++				try:
++					value = os.read(p, 512)
++				except:
++					os.close(p)
++					continue
++				os.close(p)
++				if value:
++					tg_pt_gp_tmp = value.split('\n')
++					tg_pt_gp_out = tg_pt_gp_tmp[0]
++					off = tg_pt_gp_out.index('Alias: ')
++					off += 7 # Skip over "Alias: "
++					tg_pt_gp_name = tg_pt_gp_out[off:]
++					# Only need to dump if LIO-Target Port is NOT partof
++					# the 'default_tg_pt_gp'
++					if not re.search(tg_pt_gp_name, 'default_tg_pt_gp'):
++						print "#### ALUA Target Port Group"
++						print "echo " + tg_pt_gp_name + " > " + tg_pt_gp_file
++
++#FIXME: --aluasecmd support
++#					print "lio_node --aluasecmd " + iqn + " " + tpgt + " " + lun
++
++			# Dump values of iscsi/iqn/tpgt/attrib/
++			print "#### Attributes for " + fabric_name + " Target Portal Group"
++			attrib_dir = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/attrib/"
++			attrib_root = os.listdir(attrib_dir)
++			for attrib in attrib_root:
++				attrib_file = attrib_dir + attrib 
++				p = os.open(attrib_file, 0)
++				value = os.read(p, 16)
++				print "echo " + value.rstrip() + " > " + attrib_file
++				os.close(p)
++	
++			# Dump values for iscsi/iqn/tpgt/param
++			print "#### Parameters for " + fabric_name + " Target Portal Group"
++			param_dir = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/param/"
++			param_root = os.listdir(param_dir)
++			for param in param_root:
++				param_file = param_dir + param
++				p = os.open(param_file, 0)
++				value = os.read(p, 256)
++				print "echo \"" + value.rstrip() + "\" > " + param_file
++				os.close(p)
++
++			if os.path.isfile(nexus_file):
++				continue
++
++			# Dump fabric Initiator Node ACLs from fabric_root/$WWN/tpgt_$TPGT/acls/
++			print "#### " + fabric_name + " Initiator ACLs for " + fabric_name + " Target Portal Group"
++			nacl_dir = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/acls/"
++			nacl_root = os.listdir(nacl_dir)
++			for nacl in nacl_root:
++				print "mkdir -p " + nacl_dir + nacl
++
++				# Dump fabric Initiator ACL authentication info from fabric_root/$WWN/tpgt_$TPGT/acls//$INITIATOR/auth
++				print "#### " + fabric_name + " Initiator ACL authentication information"
++				auth_dir = nacl_dir + nacl + "/auth"
++				for auth in os.listdir(auth_dir):
++					if auth == "authenticate_target":
++						continue
++					auth_file = auth_dir + "/" + auth
++					p = os.open(auth_file, 0)
++					value = os.read(p, 256)
++					ret = value.isspace()
++					if ret:
++						os.close(p)
++						continue
++					print "echo -n " + value.rstrip() + " > " + auth_file
++					os.close(p)
++
++				# Dump fabric Initiator ACL TPG attributes from fabric_root/$WWN/tpgt_$TPGT/acls/$INITIATOR/attrib
++				print "#### " + fabric_name + " Initiator ACL TPG attributes"
++				nacl_attrib_dir = nacl_dir + nacl + "/attrib"
++				for nacl_attrib in os.listdir(nacl_attrib_dir):
++					nacl_attrib_file = nacl_attrib_dir + "/" + nacl_attrib
++					p = os.open(nacl_attrib_file, 0)
++					value = os.read(p, 8)
++					print "echo " + value.rstrip() + " > " + nacl_attrib_file
++					os.close(p)
++
++				# Dump fabric Initiator LUN ACLs from fabric_root/$WWN/tpgt_$TPGT//acls/$INITIATOR/lun
++				print "#### " + fabric_name + " Initiator LUN ACLs for iSCSI Target Portal Group"
++				lun_acl_dir = nacl_dir + nacl
++				for lun_acl in os.listdir(lun_acl_dir):
++					ret = re.search('lun_', lun_acl)
++					if not ret:
++						continue
++					lun_link_dir = nacl_dir + nacl + "/" + lun_acl
++					print "mkdir -p " + lun_link_dir
++
++					for lun_acl_link in os.listdir(lun_link_dir):
++						if lun_acl_link == "write_protect":
++							p = os.open(lun_link_dir + "/write_protect", 0)
++							value = os.read(p, 4)
++							print "echo " + value.rstrip() + " > " + lun_link_dir + "/write_protect"
++							os.close(p)
++							continue
++
++						if not os.path.islink(lun_link_dir + "/" + lun_acl_link):
++							continue
++
++						sourcelink = os.readlink(lun_link_dir + "/" + lun_acl_link)
++						sourcelink2 = os.path.join(os.path.dirname(lun_link_dir + "/" + lun_acl_link), sourcelink)
++						print "ln -s " + sourcelink2 + " " + lun_link_dir + "/" + lun_acl_link 
++
++			# Dump value of fabric_root/$WWN/tpgt_$TPGT//enable
++			print "#### Trigger to enable " + fabric_name + " Target Portal Group"
++			enable_file = fabric_root + "/" + iqn + "/tpgt_" + tpgt + "/enable"
++			if os.path.isfile(enable_file):
++				p = os.open(enable_file, 0)
++				value = os.read(p, 1)
++				print "echo " + value.rstrip() + " > " + enable_file
++				os.close(p)
++
++
++	return
++
++def fabric_configfs_dump_all():
++
++	for fabric_name in os.listdir(target_root):
++		if fabric_name == "version":
++			continue
++		if fabric_name == "core":
++			continue
++		# FIXME: currently using lio_dump --stdout
++		if fabric_name == "iscsi":
++			continue
++
++		fabric_root = target_root + fabric_name
++#		print "Using fabric_configfs_dump_all: " + fabric_name + ", " + fabric_root
++		module_name = fabric_get_module_name(fabric_name)
++#		print "module_name: "+ module_name
++		
++		fabric_configfs_dump(fabric_name, fabric_root, module_name);
++
++	return
++
++def fabric_backup_to_file(date_time, fabric_name, fabric_root, module_name):
++	now = date_time
++
++	if not os.path.isdir(fabric_root):
++		print "Unable to access fabric_root: " + fabric_root
++		sys.exit(1) 
++
++	current_dir = "/etc/target"
++	backup_dir = "/etc/target/backup"
++	if not os.path.isdir(backup_dir):
++		op = "mkdir " + backup_dir
++		ret = os.system(op)
++		if ret:
++			print "Unable to open backup_dir"
++			sys.exit(1)
++
++	op = "tcm_fabric --stdout --fabric-name=" + fabric_name + " --fabric-root=" + fabric_root + " --module-name=" + module_name
++#	print "Using op: " + op
++	p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
++	if not p:
++		print "Unable to dump " + fabric_name + "/ConfigFS running state"
++		sys.exit(1)
++
++	orig_file = current_dir + "/" + fabric_name + "_start.sh"
++
++	print "Making backup of " + fabric_name + "/ConfigFS with timestamp: " + now
++	backup_file = backup_dir + "/" + fabric_name + "_backup-" + now + ".sh"
++	if os.path.isfile(backup_file): 
++		print "" + fabric_name + " backup_file: " + backup_file + "already exists, exiting"
++		p.close()
++		sys.exit(1)
++
++	back = open(backup_file, 'w')
++
++	line = p.readline()
++	while line:
++		print >>back, line.rstrip()
++		line = p.readline()
++
++	p.close()
++	back.close()
++
++	ret = shutil.copyfile(backup_file, orig_file)
++	if ret:
++		print "Unable to copy " + back_file
++		sys.exit(1)
++
++	print "Successfully updated default config " + orig_file
++
++	return backup_file
++
++def fabric_backup_to_file_all(date_time):
++
++	if not os.path.isdir(target_root):
++		print "Unable to open target_root: " + target_root
++		sys.exit(1)
++
++	for fabric_name in os.listdir(target_root):
++		if fabric_name == "version":
++			continue
++		if fabric_name == "core":
++			continue	
++		# FIXME: currently using lio_dump
++		if fabric_name == "iscsi":
++			continue
++
++		fabric_root = target_root + fabric_name
++#		print "Using fabric_backup_to_file: " + date_time + ", " + fabric_name + ", " + fabric_root
++		module_name = fabric_get_module_name(fabric_name)
++#		print "Using module_name: "+ module_name
++
++		fabric_backup_to_file(date_time, fabric_name, fabric_root, module_name)
++	
++
++	return
++
++def fabric_unload(fabric_name, fabric_root, module_name):
++
++	if not os.path.isdir(fabric_root):
++		print "Unable to access fabric_root: " + fabric_root
++		sys.exit(1)
++
++	wwn_root = os.listdir(fabric_root)
++	for wwn in wwn_root:
++		if not os.path.isdir(fabric_root + "/" + wwn):
++			continue
++		if wwn == "discovery_auth":
++			continue
++
++		tpg_root = fabric_root + "/" + wwn
++		for tpgt_tmp in os.listdir(tpg_root):
++			if tpgt_tmp == "fabric_statistics":
++				continue
++
++			tpgt_tmp2 = tpgt_tmp.split('_')
++			tpgt = tpgt_tmp2[1]
++
++			if os.path.isfile(fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/enable"):
++				disable_op = "echo 0 > " + fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/enable"
++				ret = os.system(disable_op)
++				if ret:
++					print "Unable to disable TPG: " + wwn + " TPGT: " + tpgt
++
++			nacl_root = fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/acls"
++			for nacl in os.listdir(nacl_root):
++				lun_acl_root = nacl_root + "/" + nacl + "/"
++				for lun_acl in os.listdir(lun_acl_root):
++					ret = re.search('lun_', lun_acl)
++					if not ret:
++						continue
++					mapped_lun = lun_acl[4:]
++
++					lun_link_dir = lun_acl_root + "/" + lun_acl + "/"
++					for lun_acl_link in os.listdir(lun_link_dir):
++						if lun_acl_link == "write_protect":
++							continue
++
++						if os.path.islink(lun_link_dir + "/" + lun_acl_link):
++							unlink_op = "unlink " + lun_link_dir + "/" + lun_acl_link
++							ret = os.system(unlink_op)
++							if ret:
++								print "Unable to unlink MappedLUN: " + lun_link_dir + "/" + lun_acl_link
++
++					dellunacl_op = "rmdir " + lun_link_dir
++					ret = os.system(dellunacl_op)
++					if ret:
++						print "Unable to rmdir fabric mapped_lun"
++
++				delnodeacl_op = "rmdir " + nacl_root + "/" + nacl + "/"
++				ret = os.system(delnodeacl_op)
++				if ret:
++					print "Unable to remove NodeACL: " +  nacl_root + "/" + nacl + "/"
++			
++			lun_root = fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/lun"
++			for lun_tmp in os.listdir(lun_root):
++				lun_tmp2 = lun_tmp.split('_')
++				lun = lun_tmp2[1]
++
++				lun_dir = lun_root + "/lun_" + lun
++				for port in os.listdir(lun_dir):
++					if not os.path.islink(lun_dir + "/" + port):
++						continue
++
++					unlink_op = "unlink " + lun_dir + "/" + port
++					ret = os.system(unlink_op)
++					if ret:
++						print "Unable to unlink fabric port/lun"
++
++				rmdir_op= "rmdir " + lun_dir
++				ret = os.system(rmdir_op);
++				if ret:
++					print "Unable to rmdir fabric port/lun: " + lun_dir
++
++		
++			rmdir_op = "rmdir " + fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/"
++			ret = os.system(rmdir_op)
++			if ret:
++				print "Unable to rmdir fabric tpg: " + fabric_root + "/" + wwn + "/tpgt_" + tpgt + "/"
++
++		rmdir_op = "rmdir " + fabric_root + "/" + wwn + "/"
++		ret = os.system(rmdir_op)
++		if ret:
++			print "Unable to rmdir fabric wwn: " + fabric_root + "/" + wwn + "/"
++			
++			
++
++	rmdir_op = "rmdir " + fabric_root
++        ret = os.system(rmdir_op)
++        if ret:
++                print "Unable to release fabric_root: " + fabric_root
++
++        rmmod_op = "rmmod " + module_name
++        ret = os.system(rmmod_op)
++        if ret:
++               print "Unable to unload " + module_name
++
++	print "Successfully released fabric: " + fabric_root
++        return
++
++def fabric_get_module_name(fabric_name):
++	kernel_module = ""
++
++	for specs in os.listdir(spec_root):
++		if specs == "README":
++			continue
++#		print "specs: " + specs + ", fabric_name: " + fabric_name
++
++		if not re.search(fabric_name + ".spec", specs) and not re.search("tcm_" + fabric_name + ".spec", specs) and not re.search(fabric_name, specs):
++			continue
++			
++		op = "cat " + spec_root + specs
++		p = sub.Popen(op, shell=True, stdout=sub.PIPE).stdout
++		if not p:
++			print "Unable to dump " + fabric_name + "/ConfigFS running state"
++			sys.exit(1)
++
++	        line = p.readline()
++	        while line:
++			tmp = line.rstrip()
++			# Check for 'kernel_module' line in $FABRIC.spec
++	                if re.search('kernel_module', tmp):
++				tmp_list = tmp.split('= ')
++				p.close()
++				return tmp_list[1]
++				
++	                line = p.readline()
++	
++	        p.close()
++
++	return kernel_module
++		
++def fabric_unloadall():
++
++	module_name = ""
++
++	for fabric_name in os.listdir(target_root):
++		if fabric_name == "version":
++			continue
++		if fabric_name == "core":
++			continue
++		# FIXME: currently using lio_node --unload
++		if fabric_name == "iscsi":
++			continue
++
++		fabric_root = target_root + fabric_name
++		module_name = fabric_get_module_name(fabric_name)
++#		print "fabric_get_module_name() using: " + module_name
++		
++		if module_name == "":
++			continue
++
++		fabric_unload(fabric_name, fabric_root, module_name)
++		
++
++def do_work(stdout_enable, stdout_enable_all, date_time, unload, unloadall, fabric_name, fabric_root, module_name):
++
++	if not stdout_enable == "None":
++		fabric_configfs_dump(fabric_name, fabric_root, module_name)
++	elif not stdout_enable_all == "None":
++		fabric_configfs_dump_all()
++	elif not date_time == "None":
++		fabric_backup_to_file(date_time, fabric_name, fabric_root, module_name)
++	elif not unload == "None":
++		fabric_unload(fabric_name, fabric_root, module_name)
++	elif not unloadall == "None":
++		fabric_unloadall()
++
++	return 0
++
++def main(): 
++
++	parser_fabric = optparse.OptionParser()
++	parser_fabric.add_option("--s","--stdout", dest='stdout_enable', action='store', nargs=0,
++		help="Dump running Fabric/ConfigFS syntax to STDOUT", type='string')
++	parser_fabric.add_option("--z","--stdoutall", dest='stdout_enable_all', action='store', nargs=0,
++		help="Dump all running Fabric/ConfigFS syntax to STDOUT", type='string')
++	parser_fabric.add_option("--t", "--tofile", dest="date_time", action='store', nargs=1,
++		help="Backup running Fabric/ConfigFS syntax to /etc/target/backup/fabricname_backup-<DATE_TIME>.sh",
++			type='string')
++	parser_fabric.add_option("--u", "--unload", dest="unload",  action='store', nargs=0,
++		help="Unload running Fabric/ConfigFS", type='string')
++	parser_fabric.add_option("--a", "--unloadall", dest="unloadall",  action='store', nargs=0,
++	        help="Unload all running Fabric/ConfigFS", type='string')
++	parser_fabric.add_option("--f", "--fabric-name", dest='fabric_name', action='store', nargs=1,
++		help="Target fabric name", type='string')
++	parser_fabric.add_option("--r", "--fabric-root", dest='fabric_root', action='store', nargs=1,
++		help="Target fabric configfs root", type='string')
++	parser_fabric.add_option("--m", "--module-name", dest='module_name', action='store', nargs=1,
++		help="Target fabric module name ", type='string')
++
++	(opts_fabric, args_fabric) = parser_fabric.parse_args()
++
++	mandatories = ['fabric_name', 'fabric_root', 'module_name']
++	for m in mandatories:
++	        if not opts_fabric.__dict__[m]:
++	                unloadall = str(opts_fabric.__dict__['unloadall'])
++	                stdout_enable = str(opts_fabric.__dict__['stdout_enable'])
++	                stdout_enable_all = str(opts_fabric.__dict__['stdout_enable_all'])
++	                date_time = str(opts_fabric.__dict__['date_time'])
++	                if unloadall == "None" and stdout_enable == "None" and stdout_enable_all == "None" and date_time == "None":
++	                        print "mandatory option is missing\n"
++	                        parser_fabric.print_help()
++	                        exit(-1)
++
++        do_work(str(opts_fabric.stdout_enable), str(opts_fabric.stdout_enable_all),
++		str(opts_fabric.date_time), str(opts_fabric.unload), str(opts_fabric.unloadall),
++		str(opts_fabric.fabric_name), str(opts_fabric.fabric_root),
++		str(opts_fabric.module_name))
++
++if __name__ == "__main__":
++        main()
+diff --git a/rtsadmin/tcm_fileio.py b/rtsadmin/tcm_fileio.py
+new file mode 100644
+index 0000000..14a7612
+--- /dev/null
++++ b/rtsadmin/tcm_fileio.py
+@@ -0,0 +1,83 @@
++import os
++import subprocess as sub
++import string, re 
++from optparse import OptionParser
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def createvirtdev(path, params):
++	
++#	print "Calling fileio createvirtdev: path " + path
++	cfs_path = tcm_root + "/" + path + "/"
++#	print "Calling fileio createvirtdev: params " + str(params)
++	fd_params = str(params)
++
++        # Extract the udev_dev path from fd_dev_name=
++	try:
++		off = fd_params.index('fd_dev_name=')
++		off += 12
++		file_tmp = fd_params[off:]
++		file = file_tmp.split(',')
++	except IOError, msg:
++		print "Unable to locate fd_dev_name= parameter key"
++		return -1
++
++	# Set UDEV path if struct file is pointing to an underlying struct block_device
++        if re.search('/dev/', file[0]):
++		udev_path = file[0]
++		set_udev_path_op = "echo -n " + udev_path + " > " + cfs_path + "udev_path"
++		ret = os.system(set_udev_path_op)
++		if ret:
++			print "pSCSI: Unable to set udev_path in " + cfs_path + " for: " + udev_path
++			return -1
++
++	control_opt = "echo -n " + params[0] + " > " + cfs_path + "control"
++#	print "control_opt: " + control_opt
++	ret = os.system(control_opt)
++	if ret:
++		print "FILEIO: createvirtdev failed for control_opt with " + params[0]
++		return -1
++
++	enable_opt = "echo 1 > " +  cfs_path + "enable"	
++#	print "Calling enable_opt " + enable_opt
++	ret = os.system(enable_opt)
++	if ret:
++		print "FILEIO: createvirtdev failed for enable_opt with " + params[0]
++		return -1
++
++def fd_freevirtdev():
++	pass
++
++def fd_get_params(path):
++        # Reference by udev_path if available   
++	udev_path_file = path + "/udev_path"
++	p = os.open(udev_path_file, 0)
++	value = os.read(p, 1024)
++	if re.search('/dev/', value):
++		os.close(p)
++		# Append a FILEIO size of ' 0', as struct block_device sector count is autodetected by TCM
++		return "fd_dev_name=" + value.rstrip() + ",fd_dev_size=0"
++
++	os.close(p)
++
++	info_file = path + "/info"
++	p = open(info_file, 'rU')
++	try:
++		value = p.read(1024)
++	except IOError, msg:
++		p.close()
++		return
++	p.close()
++
++	off = value.index('File: ')
++	off += 6
++	fd_dev_name_tmp = value[off:]
++	fd_dev_name = fd_dev_name_tmp.split(' ')
++	off = value.index(' Size: ')
++	off += 7
++	fd_dev_size_tmp = value[off:]
++	fd_dev_size = fd_dev_size_tmp.split(' ')
++	params = "fd_dev_name=" + fd_dev_name[0] + ",fd_dev_size=" + fd_dev_size[0]
++
++	# fd_dev_name= and fd_dev_size= parameters for tcm_node --createdev
++	return params
+diff --git a/rtsadmin/tcm_iblock.py b/rtsadmin/tcm_iblock.py
+new file mode 100644
+index 0000000..21039e1
+--- /dev/null
++++ b/rtsadmin/tcm_iblock.py
+@@ -0,0 +1,86 @@
++import os, tempfile
++import subprocess as sub
++import string, re
++from optparse import OptionParser
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def createvirtdev(path, params):
++#	print "Calling iblock createvirtdev: path " + path
++	cfs_path = tcm_root + "/" + path + "/"
++#	print "Calling iblock createvirtdev: params " + str(params)
++	path = params[0]
++	if not re.search('/dev/', path):
++		print "IBLOCK: Please reference a valid /dev/ block_device"
++		return -1
++
++	udev_path = path.rstrip()
++	# Resolve symbolic links to get major/minor
++	udev_op = "/bin/ls -laL " + udev_path
++	p = sub.Popen(udev_op, shell=True, stdout=sub.PIPE).stdout
++	line = p.readline() 
++	out = line.split(' ');
++	major = out[4]
++	minor = out[5]
++	p.close()
++
++	if major == "11,":
++		print "Unable to export Linux/SCSI TYPE_CDROM from IBLOCK, please use pSCSI export"
++		return -1
++	if major == "22,":
++		print "Unable to export IDE CDROM from IBLOCK"
++		return -1
++
++	set_udev_path_op = "echo -n " + udev_path + " > " + cfs_path + "udev_path"
++	ret = os.system(set_udev_path_op)
++	if ret:
++		print "IBLOCK: Unable to set udev_path in " + cfs_path + " for: " + udev_path
++		return -1
++
++	control_opt = "echo -n udev_path=" + udev_path + " > " + cfs_path + "control"
++	ret = os.system(control_opt)
++	if ret:
++		print "IBLOCK: createvirtdev failed for control_opt with " + control_opt
++		return -1
++
++	enable_opt = "echo 1 > " +  cfs_path + "enable"
++	ret = os.system(enable_opt)
++	if ret:
++		print "IBLOCK: createvirtdev failed for enable_opt with " + enable_opt
++		return -1
++
++def iblock_freevirtdev():
++	pass
++
++def iblock_get_params(path):
++	# Reference by udev_path if available	
++	udev_path_file = path + "/udev_path"
++	p = os.open(udev_path_file, 0)
++	value = os.read(p, 1024)
++	if re.search('/dev/', value):
++		os.close(p)
++		return value.rstrip()
++
++	os.close(p)
++
++	info_file = path + "/info"
++	p = open(info_file, 'rU')
++	try:
++		value = p.read(1024)
++	except IOError, msg:	
++		p.close()
++		return
++	p.close()
++
++	of = value.index('Major: ')
++	off += 7
++	major_tmp = value[off:]
++	major = major_tmp.split(' ')
++	off = value.index('Minor: ')
++	off += 7
++	minor_tmp = value[off:]
++	minor = minor_tmp.split(' ')
++	params = "major=" + major[0] + ",minor=" + minor[0]
++	os.close(p)
++
++	return params
+diff --git a/rtsadmin/tcm_loop.py b/rtsadmin/tcm_loop.py
+new file mode 100644
+index 0000000..194cff1
+--- /dev/null
++++ b/rtsadmin/tcm_loop.py
+@@ -0,0 +1,242 @@
++import os, sys
++import subprocess as sub
++import string
++import re
++from optparse import OptionParser
++
++tcm_loop_root = "/sys/kernel/config/target/loopback/"
++tcm_root = "/sys/kernel/config/target/core"
++
++def tcm_generate_naa_sas_address():
++	# Use NAA IEEE Registered Designator prefix, and append WWN UUID below
++	sas_address = "naa.6001405"
++
++	uuidgen_op = 'uuidgen'
++	p = sub.Popen(uuidgen_op, shell=True, stdout=sub.PIPE).stdout
++	uuid = p.readline()
++	p.close()
++
++	if not uuid:
++		print "Unable to generate UUID using uuidgen, continuing anyway"
++		sys.exit(1)
++
++	val = uuid.rstrip();
++	sas_address += val[:10]
++	sas_address = sas_address.replace('-','')
++
++	return sas_address
++
++def tcm_loop_add_target_www(option, opt_str, value, parser):
++	sas_target_address = tcm_generate_naa_sas_address();
++	sas_target_tpgt = str(value)
++
++def tcm_loop_del_target_wwn(option, opt_str, value, parser):
++	sas_target_address = str(value[0])
++	sas_target_tpgt = str(value[1])
++
++	tpgt_dir = tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt
++	delete_op = "rmdir " + tpgt_dir
++	ret = os.system(delete_op)
++	if ret:
++		print "Unable to remove configfs group: " + tpgt_dir
++
++	naa_dir = tcm_loop_root + sas_target_address
++	delete_op = "rmdir " + naa_dir
++	ret = os.system(delete_op)
++	if ret:
++		print "Unable to remove configfs group: " + naa_dir
++	else:
++		print "Successfully removed NAA based SAS Target Address: " + naa_dir + "/" + tpgt_dir
++
++def tcm_loop_create_nexus(option, opt_str, value, parser):
++	sas_target_address = tcm_generate_naa_sas_address();	
++	sas_target_tpgt = str(value)
++	sas_initiator_address = tcm_generate_naa_sas_address();
++
++	tpgt_dir = tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt
++	create_op = "mkdir -p " + tpgt_dir
++	ret = os.system(create_op)
++	if ret:
++		print "Unable to create virtual Target Port: " + create_op
++		sys.exit(1)
++
++	# In TCM_Loop 4.x code, there is an nexus configfs attribute instead of
++	# nexus configfs group
++	nexus_dir = tpgt_dir + "/nexus"
++	if os.path.isfile(nexus_dir):
++		create_op = "echo " + sas_initiator_address + " > " + nexus_dir	
++	else:
++		create_op = "mkdir -p " + nexus_dir + "/" + sas_initiator_address
++
++	ret = os.system(create_op)
++	if ret:
++		print "Unable to create virtual SAS I_T Nexus: " + create_op
++		sys.exit(1)
++	else:
++		print "Successfully created virtual SCSI I_T Nexus between TCM and Linux/SCSI HBA"
++		print "  SAS Target Address: " + sas_target_address
++		print "  SAS Initiator Address " + sas_initiator_address
++
++def tcm_loop_delete_nexus(option, opt_str, value, parser):
++	sas_target_address = str(value[0])
++	sas_target_tpgt = str(value[1])
++	sas_initiator_address = "";
++
++	nexus_dir = tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt + "/nexus"
++
++	if os.path.isfile(nexus_dir):
++		delete_op = "echo NULL > " + nexus_dir
++		
++		ret = os.system(delete_op)
++		if ret:
++			print "Unable to delete virtual SCSI I_T Nexus between TCM and Linux/SCSI HBA"
++			sys.exit(1)
++		
++		print "Successfully deleted virtual SCSI I_T Nexus between TCM and Linux/SCSI HBA"
++		return
++
++	for nexus in os.listdir(nexus_dir):
++		delete_op = "rmdir " + nexus_dir + "/" + nexus
++
++		ret = os.system(delete_op)
++		if ret:
++			print "Unable to delete virtual SCSI I_T Nexus between TCM and Linux/SCSI HBA"
++			sys.exit(1)
++
++		print "Successfully deleted virtual SCSI I_T Nexus between TCM and Linux/SCSI HBA"
++		return
++
++def tcm_loop_addlun(option, opt_str, value, parser):
++	sas_target_address = str(value[0])
++	sas_target_tpgt = str(value[1])
++	sas_target_lun = str(value[2])
++
++	mkdir_op = "mkdir -p " + tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt + "/lun/lun_" + sas_target_lun	
++	ret = os.system(mkdir_op)
++	if ret:
++		print "Unable to create SAS Target Port LUN configfs group: " + mkdir_op
++		sys.exit(1)
++
++	tcm_obj = str(value[3]);
++	port_src = tcm_root + "/" + tcm_obj
++	port_dst = tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt + "/lun/lun_" + sas_target_lun + "/virtual_scsi_port"
++
++	link_op = "ln -s " + port_src + " " + port_dst
++	ret = os.system(link_op)
++	if not ret:
++		print "Successfully created SAS Target Port to local virtual SCSI Logical Unit"
++		# FIXME Add tcm_loop_alua_check_secondary_md()
++		# FIXME Add tcm_loop_alua_set_secondary_write_md()
++	else:
++		print "Unable to create SAS Target Port to local virtual SCSI Logical Unit"
++		sys.exit(1)
++
++def tcm_loop_dellun(option, opt_str, value, parser):
++	sas_target_address = str(value[0])
++	sas_target_tpgt = str(value[1])
++	sas_target_lun = str(value[2])
++
++	port_link = ""
++
++	lun_dir = tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt + "/lun/lun_" + sas_target_lun
++	if not os.path.isdir(lun_dir):
++		print "TCM_Loop lun_dir: " + lun_dir + " does not exist"
++		sys.exit(1)
++
++	# Locate the port symlink, skipping over the per TCM port alua_* attributes
++	for port in os.listdir(lun_dir):
++		port_link_tmp = lun_dir + "/" + port
++		if not os.path.islink(port_link_tmp):
++			continue
++
++		port_link = port_link_tmp
++		break
++
++	if port_link == "":
++		print "Active TCM_Loop port link does not exist!"
++		sys.exit(1)
++
++	unlink_op = "unlink " + port_link
++	ret = os.system(unlink_op)
++	if ret:
++		print "Unable to unlink port for virtual SCSI Logical Unit: " + port
++		sys.exit(1)
++
++	rmdir_op = "rmdir " + tcm_loop_root + sas_target_address + "/tpgt_" + sas_target_tpgt + "/lun/lun_" + sas_target_lun
++	ret = os.system(rmdir_op)
++	if ret:
++		print "Unable to rmdir configfs group for virtual SCSI Logical Unit: " + port
++		sys.exit(1)
++	else:
++		print "Succesfully deleted local virtual SCSI Logical Unit from SAS Target Port"
++
++def tcm_loop_unload(option, opt_str, value, parser):
++
++	for sas_target_naa in os.listdir(tcm_loop_root):
++		print "sas_target_naa: " + sas_target_naa
++
++		if os.path.isfile(tcm_loop_root + sas_target_naa) == True:
++			continue
++
++		tpgt_dir = tcm_loop_root + sas_target_naa + "/"
++		for sas_target_tpgt in os.listdir(tpgt_dir):
++			if sas_target_tpgt == "fabric_statistics":
++				continue
++
++			print "sas_target_tpgt: " + sas_target_tpgt
++
++			lun_dir = tpgt_dir + "/" + sas_target_tpgt + "/lun/"
++			for sas_target_lun in os.listdir(lun_dir):
++
++				print "sas_target_lun: " + sas_target_lun
++				tpgt = sas_target_tpgt[5:]
++				lun = sas_target_lun[4:]
++				vals = [sas_target_naa, tpgt, lun]
++				tcm_loop_dellun(None, None, vals, None)
++
++			tpgt = sas_target_tpgt[5:]
++			vals = [sas_target_naa, tpgt]
++
++			tcm_loop_delete_nexus(None, None, vals, None)
++
++			tcm_loop_del_target_wwn(None, None, vals, None)
++
++	rmdir_op = "rmdir " + tcm_loop_root
++	ret = os.system(rmdir_op)
++	if ret:
++		print "Unable to remove tcm_loop_root configfs group: " + tcm_loop_root
++		sys.exit(1)
++
++	rmmod_op = "rmmod tcm_loop"
++	ret = os.system(rmmod_op)
++	if ret:
++		print "Unable to remove tcm_loop kernel module"
++		sys.exit(1)
++
++	print "Successfully removed tcm_loop kernel module"
++
++def main():
++
++	parser = OptionParser()
++	parser.add_option("--delwwn", action="callback", callback=tcm_loop_del_target_wwn, nargs=2,
++		type="string", dest="NAA_TARGET_WWN TPGT", help="Delete a SAS Virtual HBA by WWN+TPGT")
++	parser.add_option("--createnexus", action="callback", callback=tcm_loop_create_nexus, nargs=1,
++		type="string", dest="TPGT", help="Create a virtual SAS I_T Nexus using generated NAA WWN for SAS Address.  This will create a new Linux/SCSI Host Bus Adapter for the I_T Nexus");
++	parser.add_option("--delnexus", action="callback", callback=tcm_loop_delete_nexus, nargs=2,
++		type="string", dest="NAA_TARGET_WWN TPGT", help="Delete a virtual SAS I_T Nexus");
++	parser.add_option("--addlun", action="callback", callback=tcm_loop_addlun, nargs=4,
++		type="string", dest="NAA_TARGET_WWN TPGT LUN HBA/DEV", help="Add virtual SCSI Linux to NAA Target/Initiator Sas Addresses")
++	parser.add_option("--dellun", action="callback", callback=tcm_loop_dellun, nargs=3,
++		type="string", dest="NAA_TARGET_WWN TPGT LUN", help="Delete Target SAS Port to virtual SCSI Logical unit mapping")
++	parser.add_option("--unload", action="callback", callback=tcm_loop_unload, nargs=0,
++		help="Shutdown all virtual SCSI LUNs and unload tcm_loop")
++	
++	(options, args) = parser.parse_args()
++	if len(sys.argv) == 1:
++		parser.print_help()
++		sys.exit(0)
++	elif not re.search('--', sys.argv[1]):
++		lio_err("Unknown CLI option: " + sys.argv[1])
++
++if __name__ == "__main__":
++	main()
+diff --git a/rtsadmin/tcm_node.py b/rtsadmin/tcm_node.py
+new file mode 100644
+index 0000000..6083ab9
+--- /dev/null
++++ b/rtsadmin/tcm_node.py
+@@ -0,0 +1,737 @@
++from __future__ import with_statement
++
++import os, sys, signal
++import subprocess as sub
++import string
++import re
++import errno
++import uuid
++import shutil
++from optparse import OptionParser
++
++import tcm_pscsi
++import tcm_iblock
++import tcm_ramdisk
++import tcm_fileio
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def tcm_err(msg):
++	print >> sys.stderr, msg
++	sys.exit(1)
++
++def tcm_read(filename):
++	with open(filename) as f:
++		return f.read()
++
++def tcm_write(filename, value, newline=True):
++	with open(filename, "w") as f:
++		f.write(value)
++		if newline:
++			f.write("\n")
++
++def tcm_full_path(arg):
++	return tcm_root + "/" + arg
++
++def tcm_check_dev_exists(dev_path):
++	full_path = tcm_full_path(dev_path)
++	if not os.path.isdir(full_path):
++		tcm_err("TCM/ConfigFS storage object does not exist: " + full_path)
++
++def tcm_add_alua_lugp(gp_name):
++	os.makedirs(tcm_root + "/alua/lu_gps/" + gp_name)
++
++	try:
++		tcm_write(tcm_root + "/alua/lu_gps/%s/lu_gp_id" % lu_gp_name, lu_gp_name)
++	except:
++		os.rmdir(tcm_root + "/alua/lu_gps/" + lu_gp_name)
++		raise
++
++def tcm_add_alua_tgptgp(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	alua_cfs_path = tcm_full_path(dev_path) + "alua/" + gp_name + "/"
++
++	os.makedirs(alua_cfs_path)
++
++	try:
++		tcm_write(alua_cfs_path + "tg_pt_gp_id", "0")
++	except:
++		os.rmdir(alua_cfs_path)
++		raise
++
++def tcm_alua_check_metadata_dir(dev_path):
++	alua_path = "/var/target/alua/tpgs_" + tcm_get_unit_serial(dev_path) + "/"
++	if os.path.isdir(alua_path):
++		return
++
++	# Create the ALUA metadata directory for the passed storage object
++	# if it does not already exist.
++        os.makedirs(alua_path)
++
++def tcm_alua_delete_metadata_dir(unit_serial):
++	try:
++		os.rmdir("/var/target/alua/tpgs_" + unit_serial + "/")
++	except OSError:
++		pass
++
++def tcm_alua_process_metadata(dev_path, gp_name, gp_id):
++	alua_gp_path = tcm_full_path(dev_path) + "/alua/" + gp_name
++	alua_md_path = "/var/target/alua/tpgs_" + tcm_get_unit_serial(dev_path) \
++	    + "/" + gp_name
++
++	if not os.path.isfile(alua_md_path):
++		# If not pre-existing ALUA metadata exists, go ahead and
++		# allow new ALUA state changes to create and update the
++		# struct file metadata
++		tcm_write(alua_gp_path + "/alua_write_metadata", "1")
++		return
++
++	with open(alua_md_path, 'rU') as p:
++		d = dict()
++		for line in p.readlines():
++			name, value = line.split("=")
++			d[name.strip()] = value.strip()
++
++	if "tg_pt_gp_id" in d and int(d["tg_pt_gp_id"]) != int(gp_id):
++		raise IOError("Passed tg_pt_gp_id: %s does not match extracted: %s" % \
++			(gp_id, d["tg_pt_gp_id"]))
++
++	if "alua_access_state" in d:
++		tcm_write(alua_gp_path + "/alua_access_state", d["alua_access_state"])
++
++	if "alua_access_status" in d:
++		tcm_write(alua_gp_path + "/alua_access_status", d["alua_access_status"])
++
++	# Now allow changes to ALUA target port group update the struct file metadata
++	# in /var/target/alua/tpgs_$T10_UNIT_SERIAL/$TG_PT_GP_NAME
++	tcm_write(alua_gp_path + "/alua_write_metadata", "1")
++
++def tcm_add_alua_tgptgp_with_md(dev_path, gp_name, gp_id):
++	alua_gp_path = tcm_full_path(dev_path) + "/alua/" + gp_name
++
++	tcm_check_dev_exists(dev_path)
++
++	# If the default_tg_pt_gp is passed, we skip the creation (as it already exists)
++	# and just process ALUA metadata
++	if gp_name == 'default_tg_pt_gp' and gp_id == '0':
++		tcm_alua_process_metadata(dev_path, gp_name, gp_id)
++		return
++
++	os.makedirs(alua_gp_path)
++
++	try:
++		tcm_write(alua_gp_path + "/tg_pt_gp_id",  gp_id)
++	except:
++		os.rmdir(alua_gp_path)
++		raise
++
++	# Now process the ALUA metadata for this group
++	tcm_alua_process_metadata(dev_path, gp_name, gp_id)
++
++def tcm_delhba(hba_name):
++	hba_path = tcm_full_path(hba_name)
++
++	for g in os.listdir(hba_path):
++		if g == "hba_info" or g == "hba_mode":
++			continue
++
++		__tcm_freevirtdev(hba_name + "/" + g)
++
++	os.rmdir(hba_path)
++
++def tcm_del_alua_lugp(lu_gp_name):
++	if not os.path.isdir(tcm_root + "/alua/lu_gps/" + lu_gp_name):
++		tcm_err("ALUA Logical Unit Group: " + lu_gp_name + " does not exist!")
++
++	os.rmdir(tcm_root + "/alua/lu_gps/" + lu_gp_name)
++
++def __tcm_del_alua_tgptgp(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path)
++
++	if not os.path.isdir(full_path + "/alua/" + gp_name):
++		tcm_err("ALUA Target Port Group: " + gp_name + " does not exist!")
++
++	os.rmdir(full_path + "/alua/" + gp_name)
++
++# deletes configfs entry for alua *and* metadata dir.
++def tcm_del_alua_tgptgp(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	alua_md_path = "/var/target/alua/tpgs_" + tcm_get_unit_serial(dev_path) \
++	    + "/" + gp_name
++
++	__tcm_del_alua_tgptgp(dev_path, gp_name)
++
++	if not os.path.isfile(alua_md_path):
++		return
++
++	shutil.rmtree(alua_md_path)
++
++def tcm_generate_uuid_for_unit_serial(dev_path):
++	# Generate random uuid
++	tcm_set_wwn_unit_serial(dev_path, str(uuid.uuid4()))
++
++tcm_types = ( \
++    dict(name="pscsi", module=tcm_pscsi, gen_uuid=False),
++    dict(name="stgt", module=None, gen_uuid=True),
++    dict(name="iblock", module=tcm_iblock, gen_uuid=True),
++    dict(name="rd_dr", module=tcm_ramdisk, gen_uuid=True),
++    dict(name="rd_mcp", module=tcm_ramdisk, gen_uuid=True),
++    dict(name="fileio", module=tcm_fileio, gen_uuid=True),
++)
++
++def tcm_createvirtdev(dev_path, plugin_params, establishdev=False):
++	hba_path = dev_path.split('/')[0]
++
++	# create hba if it doesn't exist
++	hba_full_path = tcm_full_path(hba_path)
++	if not os.path.isdir(hba_full_path):
++		os.mkdir(hba_full_path)
++
++	# create dev if it doesn't exist
++	full_path = tcm_full_path(dev_path)
++	if os.path.isdir(full_path):
++		tcm_err("TCM/ConfigFS storage object already exists: " + full_path)
++	else:
++		os.mkdir(full_path)
++
++	# Determine if --establishdev is being called and we want to skip
++	# the T10 Unit Serial Number generation
++	gen_uuid = True
++	if establishdev:
++		gen_uuid = False
++
++	# Calls into submodules depending on target_core_mod subsystem plugin
++	for tcm in tcm_types:
++		if hba_path.startswith(tcm["name"] + "_"):
++			try:
++				if tcm["module"]:
++					# modules expect plugin_params to be a list, for now.
++					tcm["module"].createvirtdev(dev_path, [plugin_params])
++				else:
++					tcm_err("no module for %s" % tcm["name"])
++			except:
++				os.rmdir(full_path)
++				print "Unable to register TCM/ConfigFS storage object: " \
++					+ full_path
++				raise
++
++			print tcm_read(full_path + "/info")
++
++			if tcm["gen_uuid"] and gen_uuid:
++        	                tcm_generate_uuid_for_unit_serial(dev_path)
++				tcm_alua_check_metadata_dir(dev_path)
++			break
++
++def tcm_get_unit_serial(dev_path):
++	string = tcm_read(tcm_full_path(dev_path) + "/wwn/vpd_unit_serial")
++	return string.split(":")[1].strip()
++
++def tcm_show_aptpl_metadata(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	aptpl_file = "/var/target/pr/aptpl_" + tcm_get_unit_serial(dev_path)
++	if not os.path.isfile(aptpl_file):
++		tcm_err("Unable to dump PR APTPL metadata file: " + aptpl_file)
++
++	print tcm_read(aptpl_file)
++
++def tcm_delete_aptpl_metadata(unit_serial):
++	aptpl_file = "/var/target/pr/aptpl_" + unit_serial
++	if not os.path.isfile(aptpl_file):
++		return
++
++	shutil.rmtree(aptpl_file)
++
++def tcm_process_aptpl_metadata(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path)
++
++	aptpl_file = "/var/target/pr/aptpl_" + tcm_get_unit_serial(dev_path)
++	if not os.path.isfile(aptpl_file):
++		return
++
++	# read PR info from file
++	lines = tcm_read(aptpl_file).split()
++
++	if not lines[0].startswith("PR_REG_START:"):
++		return
++
++	reservations = []
++	for line in lines:
++		if line.startswith("PR_REG_START:"):
++			res_list = []
++		elif line.startswith("PR_REG_END:"):
++			reservations.append(res_list)
++		else:
++			res_list.append(line.strip())
++
++	# write info into configfs
++	for res in reservations:
++		tcm_write(full_path + "/pr/res_aptpl_metadata", ",".join(res))
++
++def tcm_establishvirtdev(dev_path, plugin_params):
++	tcm_createvirtdev(dev_path, plugin_params, True)
++
++def tcm_create_pscsi(dev_path, ctl):
++	# convert passed 3-tuple to format pscsi expects
++	# "1:3:5" -> "scsi_channel_id=1,scsi_target_id=3..."
++	#
++	param_names = ("scsi_channel_id", "scsi_target_id", "scsi_lun_id")
++
++	pscsi_params = zip(param_names, ctl.split(":"))
++	pscsi_params_str = ",".join([x + "=" + y for x, y in pscsi_params])
++
++	tcm_createvirtdev(dev_path, pscsi_params_str)
++
++def tcm_create_pscsibyudev(dev_path, udev_path):
++	tcm_createvirtdev(cfs_dev, udev_path)
++
++def tcm_create_iblock(dev_path, udev_path):
++	tcm_createvirtdev(dev_path, udev_path)
++
++def tcm_create_fileio(dev_path, filename, size):
++	fileio_params = "fd_dev_name=" + filename + ",fd_dev_size=" + size
++	tcm_createvirtdev(dev_path, fileio_params)
++
++def tcm_create_ramdisk(dev_path, pages):
++	tcm_createvirtdev(dev_path, pages)
++
++def __tcm_freevirtdev(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path)
++
++	for tg_pt_gp in os.listdir(full_path + "/alua/"):
++		if tg_pt_gp == "default_tg_pt_gp":
++			continue
++		__tcm_del_alua_tgptgp(dev_path, tg_pt_gp)
++
++	os.rmdir(full_path)
++
++def tcm_freevirtdev(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	unit_serial = tcm_get_unit_serial(dev_path)
++
++	__tcm_freevirtdev(dev_path)
++	# For explict tcm_node --freedev, delete any remaining
++	# PR APTPL and ALUA metadata
++	tcm_delete_aptpl_metadata(unit_serial)
++	tcm_alua_delete_metadata_dir(unit_serial)
++
++def tcm_list_dev_attribs(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path)
++
++	print "TCM Storage Object Attributes for " + full_path
++	for attrib in os.listdir(full_path + "/attrib/"):
++		print "       %s: %s" % \
++		    (attrib, tcm_read(full_path + "/attrib/" + attrib).strip())
++
++def tcm_list_hbas():
++	for hba in os.listdir(tcm_root):
++		if hba == "alua":
++			continue
++
++		print "\------> " + hba
++		dev_root = tcm_root + "/" + hba
++		print "\t" + tcm_read(dev_root+"/hba_info").strip()
++
++		for dev in os.listdir(dev_root):
++			if dev in ("hba_info", "hba_mode"):
++				continue
++
++			try:
++				value = tcm_read(dev_root + "/" + dev + "/info")
++			except IOError, msg:
++				print "        \-------> " + dev
++				print "        No TCM object association active, skipping"
++				continue
++
++			udev_path = tcm_read(dev_root + "/" + dev + "/udev_path")
++			if udev_path:
++				udev_str = "udev_path: " + udev_path.rstrip()
++			else:
++				udev_str = "udev_path: N/A"
++
++			print "        \-------> " + dev
++			print "        " + value.rstrip()
++			print "        " + udev_str
++
++def tcm_list_alua_lugps():
++	for lu_gp in os.listdir(tcm_root + "/alua/lu_gps"):
++		group_path = tcm_root + "/alua/lu_gps/" + lu_gp
++		lu_gp_id = tcm_read(group_path + "/lu_gp_id").strip()
++		print "\------> " + lu_gp + "  LUN Group ID: " + lu_gp_id
++
++		lu_gp_members = tcm_read(group_path + "/members").strip().split()
++
++		if not lu_gp_members:
++			print "         No Logical Unit Group Members"
++			continue
++
++		for member in lu_gp_members:
++			print "         " + member
++
++def tcm_dump_alua_state(alua_state_no):
++	if alua_state_no == "0":
++		return "Active/Optimized"
++	elif alua_state_no == "1":
++		return "Active/NonOptimized"
++	elif alua_state_no == "2":
++		return "Standby"
++	elif alua_state_no == "3":
++		return "Unavailable"
++	elif alua_state_no == "15":
++		return "Transition"
++	else:
++		return "Unknown"
++
++def tcm_list_alua_tgptgp(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	gp_path = tcm_full_path(dev_path) + "/alua/" + gp_name
++	
++	gp_id = tcm_read(gp_path + "/tg_pt_gp_id").strip()
++	print "\------> " + tg_pt_gp + "  Target Port Group ID: " + tg_pt_gp_id
++
++	alua_type = tcm_read(gp_path + "/alua_access_type").strip()
++	print "         Active ALUA Access Type(s): " + alua_type
++
++	alua_state = tcm_read(gp_path + "/alua_access_state").strip()
++	print "         Primary Access State: " + tcm_dump_alua_state(alua_state)
++
++	try:
++		access_status = tcm_read(gp_path + "/alua_access_status").strip()
++		print "         Primary Access Status: " + access_status
++	except IOError:
++		pass
++
++	preferred = tcm_read(gp_path + "/preferred").strip()
++	print "         Preferred Bit: " + preferred
++
++	nonop_delay = tcm_read(gp_path + "/nonop_delay_msecs").strip()
++	print "         Active/NonOptimized Delay in milliseconds: " + nonop_delay
++
++	trans_delay = tcm_read(gp_path + "/trans_delay_msecs").strip()
++	print "         Transition Delay in milliseconds: " + trans_delay
++
++	gp_members = tcm_read(gp_path + "/members").strip().split()
++
++	print "         \------> TG Port Group Members"
++	if not gp_members:
++		print "             No Target Port Group Members"
++	else:
++		for member in gp_members:
++			print "         " + member
++
++def tcm_list_alua_tgptgps(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	for tg_pt_gp in os.listdir(tcm_full_path(dev_path) + "/alua/"):
++		tcm_list_alua_tgptgp(dev_path, tg_pt_gp)
++
++def tcm_show_persistent_reserve_info(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path)
++
++	for f in os.listdir(full_path + "/pr/"):
++		info = tcm_read(full_path + "/pr/" + f).strip()
++		if info:
++			print info
++
++def tcm_set_alua_state(dev_path, gp_name, access_state):
++	tcm_check_dev_exists(dev_path)
++
++	new_alua_state_str = str(access_state).lower()
++
++	if new_alua_state_str == "o":
++		alua_state = 0 # Active/Optimized
++	elif new_alua_state_str == "a":
++		alua_state = 1 # Active/NonOptimized
++	elif new_alua_state_str == "s":
++		alua_state = 2 # Standby
++	elif new_alua_state_str == "u":
++		alua_state = 3 # Unavailable
++	else:
++		tcm_err("Unknown ALUA access state: " + new_alua_state_str)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/alua_access_state"
++	tcm_write(alua_path, str(alua_state))
++
++def tcm_set_alua_type(dev_path, gp_name, access_type):
++	tcm_check_dev_exists(dev_path)
++
++	new_alua_type_str = str(access_type).lower()
++
++	if new_alua_type_str == "both":
++		alua_type = 3
++	elif new_alua_type_str == "explict":
++		alua_type = 2
++	elif new_alua_type_str == "implict":
++		alua_type = 1
++	elif new_alua_type_str == "none":
++		alua_type = 0
++	else:
++		tcm_err("Unknown ALUA access type: " + new_alua_type_str)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/alua_access_type"
++	tcm_write(alua_path, str(alua_type))
++
++def tcm_set_alua_nonop_delay(dev_path, gp_name, msec_delay):
++	tcm_check_dev_exists(dev_path)
++
++	if not os.path.isdir(tcm_full_path(dev_path) + "/alua/" + gp_name):
++		tcm_err("Unable to locate TG Pt Group: " + gp_name)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/nonop_delay_msecs"
++	tcm_write(alua_path, str(msec_delay))
++
++def tcm_set_alua_trans_delay(dev_path, gp_name, msec_delay):
++	tcm_check_dev_exists(dev_path)
++
++	if not os.path.isdir(tcm_full_path(dev_path) + "/alua/" + gp_name):
++		tcm_err("Unable to locate TG Pt Group: " + gp_name)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/trans_delay_msecs"
++	tcm_write(alua_path, str(msec_delay))
++
++def tcm_clear_alua_tgpt_pref(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	if not os.path.isdir(tcm_full_path(dev_path) + "/alua/" + gp_name):
++		tcm_err("Unable to locate TG Pt Group: " + gp_name)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/preferred"
++	tcm_write(alua_path, "0")
++
++def tcm_set_alua_tgpt_pref(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	if not os.path.isdir(tcm_full_path(dev_path) + "/alua/" + gp_name):
++		tcm_err("Unable to locate TG Pt Group: " + gp_name)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/" + gp_name + "/preferred"
++	tcm_write(alua_path, "1")
++
++def tcm_set_alua_lugp(dev_path, gp_name):
++	tcm_check_dev_exists(dev_path)
++
++	if not os.path.isdir(tcm_full_path(dev_path) + "/alua/lu_gps/" + gp_name):
++		tcm_err("Unable to locate ALUA Logical Unit Group: " + gp_name)
++
++	alua_path = tcm_full_path(dev_path) + "/alua/lu_gps/" + gp_name + "/alua_lu_gp"
++	tcm_write(alua_path, gp_name)
++
++def tcm_set_dev_attrib(dev_path, attrib, value):
++	tcm_check_dev_exists(dev_path)
++
++	tcm_write(tcm_full_path(dev_path) + "/attrib/" + attrib, value)
++
++def tcm_set_udev_path(dev_path, udev_path):
++	tcm_check_dev_exists(dev_path)
++
++	tcm_write(tcm_full_path(dev_path) + "/udev_path", udev_path, newline=False)
++
++def tcm_set_wwn_unit_serial(dev_path, unit_serial):
++	tcm_check_dev_exists(dev_path)
++
++	tcm_write(tcm_full_path(dev_path) + "/wwn/vpd_unit_serial", unit_serial)
++
++def tcm_set_wwn_unit_serial_with_md(dev_path, unit_serial):
++	tcm_check_dev_exists(dev_path)
++
++	tcm_set_wwn_unit_serial(dev_path, unit_serial)
++	# Process PR APTPL metadata
++	tcm_process_aptpl_metadata(dev_path)
++	# Make sure the ALUA metadata directory exists for this storage object
++	tcm_alua_check_metadata_dir(dev_path)
++
++def tcm_show_udev_path(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	print tcm_read(tcm_full_path(dev_path) + "/udev_path")
++
++def tcm_show_wwn_info(dev_path):
++	tcm_check_dev_exists(dev_path)
++
++	full_path = tcm_full_path(dev_path) + "/wwn/"
++
++	for f in os.listdir(full_path):
++		info = tcm_read(full_path + f).strip()
++		if info:
++			print info
++
++def tcm_unload():
++	if not os.path.isdir(tcm_root):
++		tcm_err("Unable to access tcm_root: " + tcm_root)
++
++	hba_root = os.listdir(tcm_root)
++
++	for f in hba_root:
++		if f == "alua":
++			continue
++
++		tcm_delhba(f)
++
++	for lu_gp in os.listdir(tcm_root + "/alua/lu_gps"):
++		if lu_gp == "default_lu_gp":
++			continue
++
++		tcm_del_alua_lugp(lu_gp)
++
++	# Unload TCM subsystem plugin modules
++	for module in ("iblock", "file", "pscsi", "stgt"):
++		os.system("rmmod target_core_%s" % module)
++
++	# Unload TCM Core
++	rmmod_op = "rmmod target_core_mod"
++	ret = os.system(rmmod_op)
++	if ret:
++		tcm_err("Unable to rmmod target_core_mod")
++
++def tcm_version():
++	return tcm_read("/sys/kernel/config/target/version").strip()
++
++cmdline_options = ( \
++    dict(opt_str="--addlungp", callback=tcm_add_alua_lugp, nargs=1,
++         dest="lu_gp_name", help="Add ALUA Logical Unit Group"),
++    dict(opt_str=("--addtgptgp","--addaluatpg"),
++         callback=tcm_add_alua_tgptgp, nargs=2,
++         dest="HBA/DEV <TG_PT_GP_NAME>",
++         help="Add ALUA Target Port Group to Storage Object"),
++    dict(opt_str=("--addtgptgpwithmd","--addaluatpgwithmd"), action="callback",
++         callback=tcm_add_alua_tgptgp_with_md, nargs=3,
++         dest="HBA/DEV <TG_PT_GP_NAME> <TG_PT_GP_ID>",
++         help="Add ALUA Target Port Group to Storage Object with ID and process ALUA metadata"),
++    dict(opt_str=("--block","--iblock"), callback=tcm_create_iblock, nargs=2,
++         dest="HBA/DEV <UDEV_PATH>",
++         help="Associate TCM/IBLOCK object with Linux/BLOCK device"),
++    dict(opt_str="--clearaluapref", callback=tcm_clear_alua_tgpt_pref,
++         nargs=2, dest="HBA/DEV <TG_PT_GP_NAME>",
++         help="Clear ALUA Target Port Group Preferred Bit"),
++    dict(opt_str="--delhba", callback=tcm_delhba, nargs=1,
++         dest="HBA", help="Delete TCM Host Bus Adapter (HBA)"),
++    dict(opt_str="--dellungp", callback=tcm_del_alua_lugp, nargs=1,
++         dest="lu_gp_name", help="Delete ALUA Logical Unit Group"),
++    dict(opt_str=("--deltgptgp","--delaluatpg"), callback=tcm_del_alua_tgptgp, nargs=2,
++         dest="HBA/DEV TG_PT_GP_NAME",
++         help="Delete ALUA Target Port Group from Storage Object"),
++    dict(opt_str="--createdev", callback=tcm_createvirtdev, nargs=2,
++         dest="HBA/DEV <SUBSYSTEM_PARAMS>",
++         help="Create TCM Storage Object using subsystem dependent parameters,"
++         " and generate new T10 Unit Serial for IBLOCK,FILEIO,RAMDISK"),
++    dict(opt_str="--establishdev", callback=tcm_establishvirtdev, nargs=2,
++         dest="HBA/DEV <SUBSYSTEM_PARAMS>",
++         help="Create TCM Storage Object using subsystem dependent parameters, do"
++         "not generate new T10 Unit Serial"),
++    dict(opt_str="--fileio", callback=tcm_create_fileio, nargs=3,
++         dest="HBA/DEV <FILE> <SIZE_IN_BYTES>",
++         help="Associate TCM/FILEIO object with Linux/VFS file or underlying"
++         " device for buffered FILEIO"),
++    dict(opt_str="--freedev", callback=tcm_freevirtdev, nargs=1,
++         dest="HBA/DEV", help="Free TCM Storage Object"),
++    dict(opt_str="--listdevattr", callback=tcm_list_dev_attribs, nargs=1,
++         dest="HBA/DEV", help="List TCM storage object device attributes"),
++    dict(opt_str="--listhbas", callback=tcm_list_hbas, nargs=0,
++         help="List TCM Host Bus Adapters (HBAs)"),
++    dict(opt_str="--listlugps", callback=tcm_list_alua_lugps, nargs=0,
++         help="List ALUA Logical Unit Groups"),
++    dict(opt_str=("--listtgptgp","--listaluatpg"), callback=tcm_list_alua_tgptgp, nargs=2,
++         dest="HBA/DEV <TG_PT_GP_NAME>",
++         help="List specific ALUA Target Port Group for Storage Object"),
++    dict(opt_str=("--listtgptgps","--listaluatpgs"), callback=tcm_list_alua_tgptgps, nargs=1,
++         dest="HBA/DEV", help="List all ALUA Target Port Groups for Storage Object"),
++    dict(opt_str="--pr", callback=tcm_show_persistent_reserve_info, nargs=1,
++         dest="HBA/DEV", help="Show Persistent Reservation info"),
++    dict(opt_str="--praptpl", callback=tcm_process_aptpl_metadata, nargs=1,
++         dest="HBA/DEV", help="Process PR APTPL metadata from file"),
++    dict(opt_str="--prshowmd", callback=tcm_show_aptpl_metadata, nargs=1,
++         dest="HBA/DEV", help="Show APTPL metadata file"),
++    dict(opt_str="--ramdisk", callback=tcm_create_ramdisk, nargs=2,
++         dest="HBA/DEV <PAGES>", help="Create and associate TCM/RAMDISK object"),
++    dict(opt_str=("--scsi","--pscsi"), callback=tcm_create_pscsi, nargs=2,
++         dest="HBA/DEV <C:T:L>",
++         help="Associate TCM/pSCSI object with Linux/SCSI device by bus location"),
++    dict(opt_str=("--scsibyudev", "--pscsibyudev"), callback=tcm_create_pscsibyudev, nargs=2,
++         dest="HBA/DEV <UDEV_PATH>",
++         help="Associate TCM/pSCSI object with Linux/SCSI device by UDEV Path"),
++    dict(opt_str="--setaluadelay", callback=tcm_set_alua_nonop_delay, nargs=3,
++         dest="HBA/DEV <TG_PT_GP_NAME> <NON_OP_DELAY_IN_MSECS>",
++         help="Set ALUA Target Port Group delay for Active/NonOptimized in milliseconds"),
++    dict(opt_str="--setaluapref", callback=tcm_set_alua_tgpt_pref, nargs=2,
++         dest="HBA/DEV <TG_PT_GP_NAME>", help="Set ALUA Target Port Group Preferred Bit"),
++    dict(opt_str="--setaluastate", callback=tcm_set_alua_state, nargs=3,
++         dest="HBA/DEV <TG_PT_GP_NAME> <ALUA_ACCESS_STATE>",
++         help="Set ALUA access state for TG_PT_GP_NAME on Storage Object.  The value access"
++         " states are \"o\" = active/optimized, \"a\" = active/nonoptimized, \"s\" = standby,"
++         " \"u\" = unavailable"),
++    dict(opt_str="--setaluatransdelay", callback=tcm_set_alua_trans_delay, nargs=3,
++         dest="HBA/DEV <TG_PT_GP_NAME> <TRANS_DELAY_IN_MSECS>",
++         help="Set ALUA Target Port Group Transition delay"),
++    dict(opt_str="--setaluatype", callback=tcm_set_alua_type, nargs=3,
++         dest="HBA/DEV <TG_PT_GP_NAME> <ALUA_ACCESS_TYPE>",
++         help="Set ALUA access type for TG_PT_GP_NAME on Storage Object.  The value type"
++         " states are \"both\" = implict/explict, \"explict\", \"implict\", or \"none\""),
++    dict(opt_str="--setdevattr", callback=tcm_set_dev_attrib, nargs=3,
++         dest="HBA/DEV <ATTRIB> <VALUE>",
++         help="Set new value for TCM storage object device attribute"),
++    dict(opt_str="--setlugp", callback=tcm_set_alua_lugp, nargs=2,
++         dest="HBA/DEV LU_GP_NAME", help="Set ALUA Logical Unit Group"),
++    dict(opt_str="--setudevpath", callback=tcm_set_udev_path, nargs=2,
++         dest="HBA/DEV <udev_path>",
++         help="Set UDEV Path Information, only used when --createdev did not contain"
++         " <udev_path> as parameter"),
++    dict(opt_str="--setunitserial", callback=tcm_set_wwn_unit_serial, nargs=2,
++         dest="HBA/DEV <unit_serial>", help="Set T10 EVPD Unit Serial Information"),
++    dict(opt_str="--setunitserialwithmd", callback=tcm_set_wwn_unit_serial_with_md, nargs=2,
++         dest="HBA/DEV <unit_serial>",
++         help="Set T10 EVPD Unit Serial Information and process PR APTPL metadata"),
++    dict(opt_str="--udevpath", callback=tcm_show_udev_path, nargs=1,
++         dest="HBA/DEV", help="Show UDEV Path Information for TCM storage object"),
++    dict(opt_str="--unload", callback=tcm_unload, nargs=0,
++         help="Unload target_core_mod"),
++    dict(opt_str="--wwn", callback=tcm_show_wwn_info, nargs=1,
++         dest="HBA/DEV", help="Show WWN info"),
++)
++
++def dispatcher(option, opt_str, value, parser, orig_callback):
++	if option.nargs == 1:
++		value = (value,)
++	value = [str(x).strip() for x in value]
++	orig_callback(*value)
++
++def main():
++
++    parser = OptionParser(version=tcm_version())
++
++    for opt in cmdline_options:
++        # cmd_aliases can be string or tuple of strings.
++        # we're unpacking below, so convert strings to 1 item tuples
++        cmd_aliases = opt["opt_str"]
++        if isinstance(cmd_aliases, basestring):
++            cmd_aliases = (cmd_aliases,)
++        del opt["opt_str"]
++        # common params for all options
++        opt["action"] = "callback"
++        opt["type"] = "string"
++        opt["callback_kwargs"] = dict(orig_callback=opt["callback"])
++        opt["callback"] = dispatcher
++        parser.add_option(*cmd_aliases, **opt)
++
++    (options, args) = parser.parse_args()
++    if len(sys.argv) == 1:
++        parser.print_help()
++        sys.exit(0)
++    elif not re.search('--', sys.argv[1]):
++        tcm_err("Unknown CLI option: " + sys.argv[1])
++        
++if __name__ == "__main__":
++    main()
+diff --git a/rtsadmin/tcm_pscsi.py b/rtsadmin/tcm_pscsi.py
+new file mode 100644
+index 0000000..21879db
+--- /dev/null
++++ b/rtsadmin/tcm_pscsi.py
+@@ -0,0 +1,184 @@
++import os
++import subprocess as sub
++import string, re
++from optparse import OptionParser
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def print_lsscsi(option, opt_str, value, parser):
++        command = "lsscsi"
++
++	p = sub.Popen(command,shell=True, stdout=sub.PIPE).stdout
++	while 1:
++		line = p.readline()
++		if not line: break
++		print line,
++
++def pscsi_get_hba_prefix(arg):
++	path = "/sys/kernel/config/target/core/pscsi_" + arg
++	return path	
++
++def pscsi_scan_lsscsi(option, opt_str, value, parser):
++	command = "lsscsi -H"
++	p = sub.Popen(command,shell=True, stdout=sub.PIPE).stdout
++	while 1:
++		line = p.readline()
++		if not line: break
++		line.split()
++		host_id = line[1]
++		print "SCSI Host ID: " + host_id
++		
++		cfs_path = pscsi_get_hba_prefix(host_id)
++		if (os.path.isdir(cfs_path)):
++			print "pSCSI HBA already registered, skipping"
++			continue
++
++		print cfs_path
++		ret = os.mkdir(cfs_path)
++		print "os.path.mkdir ret: " + str(ret)
++		if not ret:
++			print "Successfully added ConfigFS path " + cfs_path
++
++def createvirtdev(path, params):
++	
++#	print "Calling pscsi createvirtdev: path " + path
++	cfs_path = tcm_root + "/" + path + "/"
++
++#	print "Calling pscsi createvirtdev: params " + str(params)
++	pscsi_params = params[0]
++#	print pscsi_params
++
++	# Exract HCTL from sysfs and set udev_path
++	if re.search('/dev/', pscsi_params):
++		udev_path = pscsi_params.rstrip()
++		if re.search('/dev/disk/', udev_path):
++			udev_op = "/bin/ls -l " + udev_path		
++			p = sub.Popen(udev_op, shell=True, stdout=sub.PIPE).stdout
++			if not p:
++				print "pSCSI: Unable to locate scsi_device from udev_path: " + udev_path
++				return -1
++
++			line = p.readline()
++			out = line.split(' ../../');
++			p.close()
++			if not out:
++				print "pSCSI: Unable to locate scsi_device from udev_path: " + udev_path
++				return -1
++	
++			scsi_dev = out[1].rstrip()
++		elif re.search('/dev/s', udev_path):
++			out = udev_path.split('/dev/')
++			scsi_dev = out[1]
++		else:
++			print "pSCSI: Unable to locate scsi_device from udev_path: " + udev_path
++			return -1
++
++		# Convert scdX to sr0 for TYPE_ROM in /sys/block/
++		if re.search('scd', scsi_dev):
++			scsi_dev = scsi_dev.replace('scd', 'sr');
++
++		if not os.path.isdir("/sys/block/" + scsi_dev + "/device/"):
++			print "pSCSI: Unable to locate scsi_device from udev_path: " + udev_path
++			return -1
++
++		scsi_dev_sysfs = "/sys/block/" + scsi_dev + "/device"
++		udev_op = "/bin/ls -l " + scsi_dev_sysfs 
++		p = sub.Popen(udev_op, shell=True, stdout=sub.PIPE).stdout
++		if not p:
++			print "pSCSI: Unable to locate scsi_device from udev_path: " + udev_path
++			return -1			
++
++		line = p.readline()
++		out = line.split('/')
++		p.close()
++
++		scsi_hctl_tmp = out[len(out)-1]	
++		scsi_hctl = scsi_hctl_tmp.split(':')
++		scsi_host_id = scsi_hctl[0]
++		scsi_channel_id = scsi_hctl[1]
++		scsi_target_id = scsi_hctl[2]
++		scsi_lun_id = scsi_hctl[3]
++		print "pSCSI: Referencing HCTL " + out[1].rstrip() + " for udev_path: " + udev_path
++
++		set_udev_path_op = "echo -n " + udev_path + " > " + cfs_path + "udev_path"
++		ret = os.system(set_udev_path_op)
++		if ret:
++			print "pSCSI: Unable to set udev_path in " + cfs_path + " for: " + udev_path
++			return -1
++
++		pscsi_params = "scsi_host_id=" + scsi_host_id + ",scsi_channel_id=" + scsi_channel_id + ",scsi_target_id=" + scsi_target_id + ",scsi_lun_id=" + scsi_lun_id.rstrip()
++
++		
++	control_opt = "echo -n " + pscsi_params + " > " + cfs_path + "control"
++#	print "Calling control_opt " + control_opt
++	ret = os.system(control_opt)
++	if ret:
++		print "pSCSI: createvirtdev failed for control_opt with " + pscsi_params
++		return -1
++
++	enable_opt = "echo 1 > " +  cfs_path + "enable"	
++#	print "Calling enable_opt " + enable_opt
++	ret = os.system(enable_opt)
++	if ret:
++		print "pSCSI: createvirtdev failed for enable_opt with " + pscsi_params
++		return -1
++
++def pscsi_freevirtdev():
++	pass
++
++def pscsi_get_params(path):
++	# Reference by udev_path if available   
++	udev_path_file = path + "/udev_path"
++	p = os.open(udev_path_file, 0)
++	value = os.read(p, 1024)
++	if re.search('/dev/', value):
++		os.close(p)
++		return value.rstrip()
++
++	os.close(p)
++
++	info_file = path + "/info"
++	p = open(info_file, 'rU')
++	try:
++		value = p.read(1024)
++	except IOError, msg:
++		p.close()
++		return
++	p.close()
++
++	off = value.index('Channel ID: ')
++	off += 12	
++	channel_id_tmp = value[off:]
++	channel_id = channel_id_tmp.split(' ')
++	off = value.index('Target ID: ')
++	off += 11
++	target_id_tmp = value[off:]
++	target_id = target_id_tmp.split(' ')
++	off = value.index('LUN: ')	
++	off += 5
++	lun_id_tmp = value[off:]
++	lun_id = lun_id_tmp.split(' ')
++	params = ""
++	
++	try:
++		off = value.index('Host ID: ')
++	except ValueError:
++		params = ""
++	else:
++		off += 9
++		host_id_tmp = value[off:]
++		host_id = host_id_tmp.split(' ')
++		host_id = host_id[0].rstrip()
++		if host_id != "PHBA":
++			params += "scsi_host_id=" + host_id[0] + ","
++
++	params += "scsi_channel_id=" + channel_id[0] + ",scsi_target_id=" + target_id[0] + ",scsi_lun_id=" + lun_id[0].rstrip()
++
++	# scsi_channel_id=, scsi_target_id= and scsi_lun_id= reference for tcm_node --createdev
++	return params
++	
++#parser = OptionParser()
++#parser.add_option("-s", "--scan", action="callback", callback=pscsi_scan_lsscsi,
++#		default=False, help="Scan and register pSCSI HBAs with TCM/ConfigFS")
++#parser.parse_args()
++#
+diff --git a/rtsadmin/tcm_ramdisk.py b/rtsadmin/tcm_ramdisk.py
+new file mode 100644
+index 0000000..127fd07
+--- /dev/null
++++ b/rtsadmin/tcm_ramdisk.py
+@@ -0,0 +1,53 @@
++import os
++import subprocess as sub
++import string, re
++from optparse import OptionParser
++
++tcm_root = "/sys/kernel/config/target/core"
++
++def createvirtdev(path, params):
++	
++#	print "Calling ramdisk createvirtdev: path " + path
++	cfs_path = tcm_root + "/" + path + "/"
++#	print "Calling ramdisk createvirtdev: params " + str(params)
++	rd_pages = params[0]
++
++	rd_params = "rd_pages=" + rd_pages
++#	print "rd_params: " + rd_params
++
++	control_opt = "echo -n " + rd_params.rstrip() + " > " + cfs_path + "/control"
++#	print "control_opt: " + control_opt
++	ret = os.system(control_opt)
++	if ret:
++		print "RAMDISK: createvirtdev failed for control_opt with " + rd_params
++		return -1
++
++	enable_opt = "echo 1 > " +  cfs_path + "enable"	
++#	print "Calling enable_opt " + enable_opt
++	ret = os.system(enable_opt)
++	if ret:
++		print "RAMDISK: createvirtdev failed for enable_opt with " + rd_params
++		return -1
++
++def rd_freevirtdev():
++	pass
++
++def rd_get_params(path):
++
++	info_file = path + "/info"
++	p = open(info_file, 'rU')
++	try:
++		value = p.read(1024)
++	except IOError, msg:
++		p.close()
++		return
++	p.close()
++
++	off = value.index('PAGE_SIZE: ')
++	off += 11 # Skip over "PAGE_SIZE: "
++	rd_pages_tmp = value[off:]
++	rd_pages = rd_pages_tmp.split('*')
++	params = "rd_pages=" + rd_pages[0]
++
++	# rd_pages= parameter for tcm_node --createdev
++	return rd_pages[0]
+-- 
+1.7.1
+

@@ -1,0 +1,26 @@
+From 8b7e7bd1c01b922893cbc7d61732e0c0fdc4d5f7 Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Thu, 28 Jul 2011 11:35:26 -0700
+Subject: [PATCH 5/7] fixup setup.py
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ setup.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/setup.py b/setup.py
+index 7968530..70bcc23 100755
+--- a/setup.py
++++ b/setup.py
+@@ -26,7 +26,7 @@ VERSION = str(PKG.__version__)
+ (AUTHOR, EMAIL) = re.match('^(.*?)\s*<(.*)>$', PKG.__author__).groups()
+ URL = PKG.__url__
+ LICENSE = PKG.__license__
+-SCRIPTS = ["scripts/rtsadmin"]
++SCRIPTS = ["scripts/targetadmin"]
+ DESCRIPTION = PKG.__description__
+ 
+ setup(
+-- 
+1.7.1
+

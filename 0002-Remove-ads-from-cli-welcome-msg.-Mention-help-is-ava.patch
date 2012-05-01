@@ -1,0 +1,30 @@
+From b312dc42833f0e6001072d29dce43105fb7c378c Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Sat, 30 Jul 2011 16:02:43 -0700
+Subject: [PATCH 2/7] Remove ads from cli welcome msg. Mention help is available.
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ scripts/targetadmin |    5 ++---
+ 1 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/targetadmin b/scripts/targetadmin
+index b010823..0d76848 100755
+--- a/scripts/targetadmin
++++ b/scripts/targetadmin
+@@ -57,10 +57,9 @@ def main():
+ 
+     shell = RTSAdmin('~/.rtsadmin')
+     shell.con.epy_write('''
+-                        Welcome to the B{rtsadmin Community Edition} CLI::
+-                         Copyright (c) 2011 by RisingTide Systems LLC.
++                         Copyright (c) 2011 by RisingTide Systems LLC.\n
++                         For help on commands, type 'help'.
+ 
+-                        Visit us at U{http://www.risingtidesystems.com}.
+                        ''')
+     shell.con.display('')
+     if not is_root:
+-- 
+1.7.1
+

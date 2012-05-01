@@ -1,0 +1,13 @@
+diff --git a/rtsadmin/__init__.py b/rtsadmin/__init__.py
+index 90150a8..c8a8f07 100644
+--- a/rtsadmin/__init__.py
++++ b/rtsadmin/__init__.py
+@@ -17,7 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ from ui_root import UIRoot
+ 
+-__version__ = 'GIT_VERSION'
++__version__ = '37f175c'
+ __author__ = "Jerome Martin <jxm@risingtidesystems.com>"
+ __url__ = "http://www.risingtidesystems.com"
+ __description__ = "An administration shell for RTS storage targets."

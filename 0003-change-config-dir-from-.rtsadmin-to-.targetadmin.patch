@@ -1,0 +1,26 @@
+From e38c5bb23c63ab959fb77839892e1d7599216d9c Mon Sep 17 00:00:00 2001
+From: Andy Grover <agrover@redhat.com>
+Date: Thu, 28 Jul 2011 11:01:11 -0700
+Subject: [PATCH 3/7] change config dir from .rtsadmin to .targetadmin
+
+Signed-off-by: Andy Grover <agrover@redhat.com>
+---
+ scripts/targetadmin |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/scripts/targetadmin b/scripts/targetadmin
+index 0d76848..5cca9dd 100755
+--- a/scripts/targetadmin
++++ b/scripts/targetadmin
+@@ -55,7 +55,7 @@ def main():
+     else:
+         is_root = False
+ 
+-    shell = RTSAdmin('~/.rtsadmin')
++    shell = RTSAdmin('~/.targetadmin')
+     shell.con.epy_write('''
+                          Copyright (c) 2011 by RisingTide Systems LLC.\n
+                          For help on commands, type 'help'.
+-- 
+1.7.1
+

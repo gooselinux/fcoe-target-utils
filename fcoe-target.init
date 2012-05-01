@@ -1,0 +1,174 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides: fcoe-target
+# Required-Start: fcoe
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: start and stop fcoe-target
+# Description: start and stop fcoe-target
+### END INIT INFO
+# chkconfig: 2345 22 81
+. /etc/init.d/functions
+
+[ -f /etc/sysconfig/fcoe-target ] && . /etc/sysconfig/fcoe-target
+
+prog="FCoE Target"
+
+load_modules()
+{
+    errmsg=$( /sbin/modprobe configfs 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_mod 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_pscsi 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_file 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_iblock 2>&1 ) || return 1
+
+    return 0
+}
+
+start_configfs()
+{
+    # configfs
+    awk '{ print $2 }' /etc/mtab | grep "/sys/kernel/config" &> /dev/null \
+    && awk '{ print $3 }' /etc/mtab | grep "configfs" &> /dev/null
+    if [ $? -ne 0 ]
+    then
+	errmsg=$( /bin/mount -t configfs none /sys/kernel/config 2>&1 )
+	return $?
+    fi
+    return 0
+}
+
+apply_config()
+{
+    [ -f /etc/target/tcm_start.sh ] && . /etc/target/tcm_start.sh
+    [ -f /etc/target/tcm_start.sh ] && . /etc/target/loopback_start.sh
+    [ -f /etc/target/tcm_start.sh ] && . /etc/target/fc_start.sh
+    return 0
+}
+
+start()
+{
+    echo "Starting $prog: "
+
+    echo -n "   Loading modules... "
+    load_modules
+    if [ $? -eq 0 ] 
+    then
+	echo "done"
+    else
+	echo "failed"
+	return 1
+    fi
+
+    echo -n "   Mounting configfs... "
+    start_configfs
+    if [ $? -eq 0 ] 
+    then
+	echo "done"
+    else
+	echo "failed"
+	return 1
+    fi
+
+    echo -n "   Applying saved config... "
+    apply_config
+    if [ $? -eq 0 ] 
+    then
+	echo "done"
+    else
+	echo "failed"
+	return 1
+    fi
+    
+    return 0
+}
+
+stop_configfs()
+{
+    awk '{ print $2 }' /etc/mtab | grep "/sys/kernel/config" &> /dev/null\
+    && awk '{ print $3 }' /etc/mtab | grep "configfs" &> /dev/null
+    if [ $? -eq 0 ] && [ -z "$(ls -1 /sys/kernel/config)" ]
+    then
+	errmsg=$( /bin/umount /sys/kernel/config 2>&1 )
+	if [ $? -ne 0 ]
+	then
+	    echo -n $errmsg " "
+	fi
+    fi
+    return 0
+}
+
+unload_modules()
+{
+    errmsg=$( /sbin/modprobe target_core_pscsi 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_file 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_iblock 2>&1 ) || return 1
+    errmsg=$( /sbin/modprobe target_core_mod 2>&1 ) || return 1
+
+    return 0
+}
+
+stop()
+{
+    echo "Stopping $prog: "
+
+    echo -n "   Unloading $prog modules... "
+    stop_ccsd
+    if [ $? -eq 0 ]
+    then
+	echo "done"
+    else
+	echo "failed"
+	return 1
+    fi
+
+    echo -n "   Unmounting configfs... "
+    stop_configfs
+    if [ $? -eq 0 ]
+    then
+	echo "done"
+    else
+	echo "failed"
+	return 1
+    fi
+
+    return 0
+}
+
+# See how we were called.
+case "$1" in
+    start)
+	start
+	rtrn=$?
+	if [ $rtrn -ne 0 ] 
+	then
+	    echo $errmsg
+	    failure "failed to start $prog"
+	    echo
+	else
+	    success "start"
+	    echo
+	fi
+	;;
+    stop)
+	success "shutdown"
+	echo
+	;;
+
+    restart)
+	$0 stop restart
+	$0 start
+	rtrn=$?
+	;;
+
+    status)
+	echo "Use targetadmin to check status."
+	;;
+
+    *)
+	    echo $"Usage: $0 {start|stop|restart|status}"
+	    ;;
+esac
+
+exit $rtrn
